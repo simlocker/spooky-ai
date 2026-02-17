@@ -318,9 +318,9 @@ def refresh_metrics():
         if app_mode == "AI Gateway (OpenAI)":
             if st.session_state.show_cost:
                 cost = st.session_state.session_costs["AI Gateway (OpenAI)"]
-                st.info(f"**Total Spend:** ${cost:,.6f}")
+                st.info(f"**Total Approximate Spend:** ${cost:,.6f}")
         else:
-            with st.expander("📊 Session Stats", expanded=False):
+            with st.expander("Session Stats [beta]", expanded=False):
                 c1, c2 = st.columns(2)
                 c1.metric("Blocks", st.session_state.security_stats["blocks"])
                 c2.metric("Redactions", st.session_state.security_stats["redactions"])
