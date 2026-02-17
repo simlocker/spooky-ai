@@ -38,6 +38,6 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
 
 ##
 
-**Known bugs: possibly many a of today!**
+**Unknown bugs: possibly many a of today!**
 <br><br><br>
 More detailed information coming soon....
