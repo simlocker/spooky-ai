@@ -11,12 +11,20 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
    git clone https://github.com/simlocker/spooky-ai.git
    cd spooky-ai
 
-2. **Configure Keys**
+2. **Configure Keys and other Data**
 
    Copy the example environment file and populate the required fields:
    ```bash
    cp .env.example .env
    # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `DEMO_USER_EMAIL` | `user@example.com` | Change this depending on your Prompt Security policies defined for Homegrown Apps. |
+| `PS_APP_ID` | `-` | Your Prompt Security App Id |
+| `PS_GATEWAY_URL` | `https://eunorth.prompt.security` | Your Prompt Security base URL |
+| `GEMINI_FREE_API_KEY` | `-` | Your Google AI Studio API key |
+| `OPENAI_API_KEY` | `-` | Your OpenAI API key |
 
 (Please note the app won't work unless there's at least ONE API key present for one of the LLMs.)
 
