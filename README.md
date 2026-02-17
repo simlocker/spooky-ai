@@ -16,6 +16,7 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
    Copy the example environment file and populate the required fields:
    ```bash
    cp .env.example .env
+   nano .env
    # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
 
 | Variable | Default | Description |
