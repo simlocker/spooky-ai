@@ -5,6 +5,7 @@ import requests
 import os
 import pypdf
 import random
+import json
 from PIL import Image
 
 # ==========================================================
