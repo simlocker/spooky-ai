@@ -39,6 +39,6 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
 ##
 
 **Know bugs: possibly many a of today!**
-##
+#
 
 More detailed information coming soon....
