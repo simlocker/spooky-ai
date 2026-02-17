@@ -24,3 +24,6 @@ A secure AI chat interface featuring Prompt Security integration.
 3. **Access your Instance**
    Open your browser to http://your-ip-address:8501
 
+
+
+More detailed information coming soon....
