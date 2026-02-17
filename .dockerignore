@@ -1,0 +1,5 @@
+.env
+.git
+archive/
+*.bak
+*.bakfinal

@@ -1,9 +1,11 @@
 services:
   hybrid-chatbot:
     build: .
-    container_name: spooky-homegrown-app  # Added this line
+    container_name: prompt-homegrown-app
     ports:
       - "8501:8501"
     env_file:
       - .env
+    volumes:
+      - .:/app
     restart: always
