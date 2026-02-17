@@ -1,0 +1,10 @@
+# Secrets - NEVER COMMIT THESE
+.env
+
+# Python compilation files
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+*.bakfinal

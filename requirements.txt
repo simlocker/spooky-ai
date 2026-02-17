@@ -1,0 +1,6 @@
+streamlit
+openai
+google-generativeai>=0.8.3
+requests
+pypdf
+Pillow

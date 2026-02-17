@@ -1,0 +1,9 @@
+services:
+  hybrid-chatbot:
+    build: .
+    container_name: prompt-homegrown-app  # Added this line
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: always
