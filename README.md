@@ -13,7 +13,9 @@ A secure AI chat interface featuring Prompt Security integration.
    Copy the example environment file and add your API keys:
    ```bash
    cp .env.example .env
-   # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security)
+   # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
+
+(Please note the app won't work unless there's at least 1 LLM API key present.)
 
 3. **Run with Docker**
    ```bash
