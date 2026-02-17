@@ -32,12 +32,12 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
    ```bash
    docker compose up -d --build
 
-3. **Access your Instance**
+4. **Access your Instance**
    Open your browser to http://your-ip-address:8501
 
 
 ##
 
 **Known bugs: possibly many a of today!**
-<br><br>
+<br><br><br>
 More detailed information coming soon....
