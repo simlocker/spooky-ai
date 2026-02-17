@@ -22,5 +22,5 @@ A secure AI chat interface featuring Prompt Security integration.
    docker compose up -d --build
 
 3. **Access your Instance**
-   Open your browser to http://localhost:8501
+   Open your browser to http://your-ip-address:8501
 
