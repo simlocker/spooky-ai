@@ -414,6 +414,7 @@ for i, msg in enumerate(st.session_state.multi_messages[app_mode]):
             # Ideally we'd store debug info per message in history, but for this demo simple state is sufficient
             with debug_box_placeholder.container(): render_debug_box(info)
 
+
 # ==========================================================
 # --- CHAT INPUT & PROCESSING ---
 # ==========================================================
@@ -452,11 +453,11 @@ if is_new_interaction and selected_model not in ["Unavailable", "Connection Erro
             except: pass
 
     combined_prompt_text = f"{prompt if prompt else ''} {file_text_context}".strip()
-    
+
     if combined_prompt_text or image_content:
         # 1. Clear previous placeholder if it exists to prepare for new content
         if debug_box_placeholder: debug_box_placeholder.empty()
-        
+
         # 2. Append User Message
         st.session_state.multi_messages[app_mode].append({"role": "user", "content": combined_prompt_text})
         with st.chat_message("user"):
@@ -467,12 +468,25 @@ if is_new_interaction and selected_model not in ["Unavailable", "Connection Erro
         active_debug_placeholder = st.empty()
 
         if app_mode == "AI Gateway (OpenAI)":
-            client = OpenAI(base_url=PS_GATEWAY_URL, api_key=api_key,
-                            default_headers={"ps-app-id": PS_APP_ID, "forward-domain": "api.openai.com", "user": user_email})
+            # FIX: The OpenAI client specifically requires the /v1 suffix for the Gateway proxy
+            openai_base_url = f"{PS_GATEWAY_URL.strip('/')}/v1"
+            
+            client = OpenAI(
+                base_url=openai_base_url, 
+                api_key=api_key,
+                default_headers={
+                    "ps-app-id": PS_APP_ID, 
+                    "forward-domain": "api.openai.com", 
+                    "user": user_email
+                }
+            )
+            
             with st.chat_message("assistant"):
                 try:
-                    response = client.chat.completions.create(model=selected_model,
-                                                              messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode]])
+                    response = client.chat.completions.create(
+                        model=selected_model,
+                        messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode]]
+                    )
                     u = response.usage
                     if u:
                         rate = 0.15 if "mini" in selected_model else 2.50
@@ -485,15 +499,15 @@ if is_new_interaction and selected_model not in ["Unavailable", "Connection Erro
         else:
             # A. CHECK PROMPT SECURITY
             is_safe, checked_p, debug, status_type = check_security_api(combined_prompt_text, "prompt")
-            
+
             # Store initial state (likely "Safe")
             st.session_state.last_debug_info = {"is_safe": is_safe, "checked_p": checked_p, "original_p": combined_prompt_text, "debug": debug, "status_type": status_type}
-            
+
             # Render "Safe" initially
-            if debug_mode: 
+            if debug_mode:
                 with active_debug_placeholder.container():
                     render_debug_box(st.session_state.last_debug_info)
-            
+
             refresh_metrics()
 
             if not is_safe:
@@ -511,25 +525,22 @@ if is_new_interaction and selected_model not in ["Unavailable", "Connection Erro
                             history_payload = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]} for m in st.session_state.multi_messages[app_mode][:-1]]
                             chat = gem_model.start_chat(history=history_payload)
                             res = chat.send_message(gemini_content)
-                            
+
                             # C. CHECK RESPONSE SECURITY
                             is_res_safe, safe_res, res_debug, res_status_type = check_security_api(res.text, "response")
-                            
+
                             st.write(safe_res)
                             st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": safe_res})
-                            
+
                             # D. UPGRADE DEBUG BOX IF NEEDED
-                            # If the response triggered a redaction or block, update the debug box to show THAT info 
-                            # instead of the "Safe" prompt info. This ensures the user sees the most critical info.
                             if res_status_type in ["redacted", "blocked"]:
                                 st.session_state.last_debug_info = {
-                                    "is_safe": is_res_safe, 
-                                    "checked_p": safe_res, 
-                                    "original_p": res.text, 
-                                    "debug": res_debug, 
+                                    "is_safe": is_res_safe,
+                                    "checked_p": safe_res,
+                                    "original_p": res.text,
+                                    "debug": res_debug,
                                     "status_type": res_status_type
                                 }
-                                # Re-render into the SAME placeholder, effectively updating the UI
                                 if debug_mode:
                                     with active_debug_placeholder.container():
                                         render_debug_box(st.session_state.last_debug_info)
