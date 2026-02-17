@@ -1,7 +1,7 @@
 services:
   hybrid-chatbot:
     build: .
-    container_name: prompt-homegrown-app  # Added this line
+    container_name: spooky-homegrown-app  # Added this line
     ports:
       - "8501:8501"
     env_file:
