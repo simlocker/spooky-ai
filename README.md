@@ -10,7 +10,7 @@ A secure AI chat interface featuring Prompt Security integration.
    cd spooky-ai
 
 2. **Configure Keys**
-   Copy the example environment file and add your API keys:
+   Copy the example environment file and populate the required fields:
    ```bash
    cp .env.example .env
    # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
