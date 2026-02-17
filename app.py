@@ -12,7 +12,7 @@ from PIL import Image
 # --- PAGE CONFIGURATION ---
 # ==========================================================
 st.set_page_config(
-    page_title="Spooky Homegrown AI",
+    page_title="Spooky AI - Homegrown App",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
