@@ -1,6 +1,6 @@
 # Spooky AI 👻 - Homegrown App 
 
-A secure AI chat interface featuring Prompt Security integration.
+A secure AI chat interface featuring Prompt Security integration, using Google Gemini and OpenAI APIs.
 
 ## Setup Instructions
 
@@ -16,7 +16,7 @@ A secure AI chat interface featuring Prompt Security integration.
    cp .env.example .env
    # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
 
-(Please note the app won't work unless there's at least ONE API key present for the LLMs.)
+(Please note the app won't work unless there's at least ONE API key present for one of the LLMs.)
 
 3. **Run with Docker**
    ```bash
