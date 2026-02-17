@@ -1,6 +1,6 @@
 # Spooky AI 👻 - Homegrown App 
 
-A secure AI chat interface featuring Prompt Security integration, using Google Gemini (Free Tier!) and OpenAI APIs.
+A secure AI chat interface featuring Prompt Security (a SentinelOne company) integration, using Google Gemini (Free Tier!) and OpenAI APIs.
 
 ## Setup Instructions
 
