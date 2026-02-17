@@ -10,6 +10,7 @@ A secure AI chat interface featuring Prompt Security integration.
    cd spooky-ai
 
 2. **Configure Keys**
+
    Copy the example environment file and populate the required fields:
    ```bash
    cp .env.example .env
