@@ -148,12 +148,16 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 # --- PROMPT SECURITY GLOBALS ---
 # ==========================================================
 PS_APP_ID = os.getenv("PS_APP_ID")
-PS_GATEWAY_URL = "https://eunorth.prompt.security/v1"
-PS_PROTECT_API = "https://eunorth.prompt.security/api/protect"
+# User now provides the base Gateway URL in .env
+PS_GATEWAY_URL = os.getenv("PS_GATEWAY_URL")
 
-if not PS_APP_ID:
-    st.error("🚨 Critical Error: PS_APP_ID is missing. Please check your .env file and fill in appropriately.")
+if not PS_APP_ID or not PS_GATEWAY_URL:
+    st.error("🚨 Critical Error: PS_APP_ID or PS_GATEWAY_URL is missing. Please check your .env file.")
     st.stop()
+
+# Dynamically construct the Protect API endpoint
+# .strip("/") ensures we don't end up with double slashes if the user includes one
+PS_PROTECT_API = f"{PS_GATEWAY_URL.strip('/')}/api/protect"
 
 # ==========================================================
 # --- INITIALIZE SESSION STATES ---
