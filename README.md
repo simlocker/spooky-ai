@@ -1,4 +1,4 @@
-# Spooky AI - Homegrown App 👻
+# Spooky AI 👻 - Homegrown App 
 
 A secure AI chat interface featuring Prompt Security integration.
 
