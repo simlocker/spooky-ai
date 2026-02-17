@@ -33,6 +33,7 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
    docker compose up -d --build
 
 4. **Access your Instance**
+
    Open your browser to http://your-ip-address:8501
 
 
