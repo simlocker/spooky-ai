@@ -21,8 +21,8 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `DEMO_USER_EMAIL` | `user@example.com` | Change this depending on your Prompt Security policies defined for Homegrown Apps. |
-| `PS_APP_ID` | `-` | Your Prompt Security App Id |
-| `PS_GATEWAY_URL` | `https://eunorth.prompt.security` | Your Prompt Security base URL |
+| `PS_APP_ID` | `-` | Your Prompt Security App Id (api key) |
+| `PS_GATEWAY_URL` | `https://******.prompt.security` | Change this to your Prompt Security base URL |
 | `GEMINI_FREE_API_KEY` | `-` | Your Google AI Studio API key |
 | `OPENAI_API_KEY` | `-` | Your OpenAI API key |
 
