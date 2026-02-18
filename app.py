@@ -195,6 +195,8 @@ def reset_chat():
 
 def set_prompt(text):
     st.session_state.input_text = text
+    # FIX: Force-clear the file uploader so the old file doesn't attach to the new trigger
+    st.session_state.uploader_key += 1
 
 def render_debug_box(info):
     if not info: return
