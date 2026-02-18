@@ -226,50 +226,55 @@ with st.sidebar:
     st.header("App Settings")
     st.button("🗑️ Clear Current Chat", use_container_width=True, on_click=reset_chat)
 
-    # Load triggers from external file
+    # 1. Load triggers dynamically
+    trigger_data = {}
     try:
         with open("triggers.txt", "r") as f:
-            trigger_pools = json.load(f)
+            trigger_data = json.load(f)
     except Exception as e:
-        # If the file is missing in the container, we show a clear warning
-        st.sidebar.warning("⚠️ triggers.txt not found in container. Rebuild with 'docker-compose up --build'")
-        # Provide a fallback list so random.choice does NOT crash the app
-        fallback = ["Trigger data missing. Please check triggers.txt"]
-        trigger_pools = {k: fallback for k in ["email_cc", "crypto", "aws", "github", "animals", "trading", "leak", "override"]}
+        st.sidebar.warning("⚠️ triggers.txt issue. Rebuild Docker or check JSON format.")
+        # Fallback structure to prevent crash if file is broken
+        trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
 
+    # 2. Dynamic Popover Generation
     with st.popover("💡 Triggers", use_container_width=True):
         col_t, col_r = st.columns([0.7, 0.3])
         col_t.markdown("### Sample Prompts")
         if col_r.button("🔄", help="Reload triggers.txt"):
             st.rerun()
 
-        st.markdown("**Sensitive Data**")
-        c1, c2 = st.columns(2)
-        with c1: st.button("Email+CC", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("email_cc", ["No data"])),))
-        with c2: st.button("Crypto", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("crypto", ["No data"])),))
-
-        st.markdown("**Secrets**")
-        c_sec1, c_sec2 = st.columns(2)
-        with c_sec1: st.button("AWS", use_container_width=True, on_click=set_prompt,
-                               args=(random.choice(trigger_pools.get("aws", ["No data"])),))
-        with c_sec2: st.button("GitHub", use_container_width=True, on_click=set_prompt,
-                               args=(random.choice(trigger_pools.get("github", ["No data"])),))
-
-        st.markdown("**Topics**")
-        c3, c4 = st.columns(2)
-        with c3: st.button("Animals", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("animals", ["No data"])),))
-        with c4: st.button("Trading", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("trading", ["No data"])),))
-
-        st.markdown("**Prompt Injection**")
-        c5, c6 = st.columns(2)
-        with c5: st.button("Leak", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("leak", ["No data"])),))
-        with c6: st.button("Override", use_container_width=True, on_click=set_prompt,
-                           args=(random.choice(trigger_pools.get("override", ["No data"])),))
+        # Iterate over Top-Level Groups (e.g., "Sensitive Data", "Secrets")
+        for group_name, sub_items in trigger_data.items():
+            # Check if this entry contains sub-items (buttons) or is just a flat list
+            if isinstance(sub_items, dict):
+                st.markdown(f"**{group_name}**")
+                
+                # Get all button names in this group
+                btn_names = list(sub_items.keys())
+                
+                # Create rows with 2 columns each
+                for i in range(0, len(btn_names), 2):
+                    cols = st.columns(2)
+                    # Loop for the 2 columns (left and right)
+                    for j in range(2):
+                        if i + j < len(btn_names):
+                            btn_label = btn_names[i+j]
+                            prompt_list = sub_items[btn_label]
+                            
+                            # Render the button
+                            with cols[j]:
+                                if st.button(
+                                    btn_label, 
+                                    use_container_width=True, 
+                                    # Unique key is essential for buttons generated in loops
+                                    key=f"trig_{group_name}_{btn_label}"
+                                ):
+                                    set_prompt(random.choice(prompt_list))
+            
+            elif isinstance(sub_items, list):
+                # Handle legacy flat lists if any exist (e.g. if you didn't nest them)
+                if st.button(group_name, use_container_width=True, key=f"trig_flat_{group_name}"):
+                    set_prompt(random.choice(sub_items))
 
     st.divider()
     app_mode = st.radio("Select Prompt Security Integration:", ["API (Gemini)", "AI Gateway (OpenAI)"],
