@@ -9,7 +9,7 @@ import json
 from PIL import Image
 
 # ==========================================================
-# --- PAGE CONFIGURATION ---
+# ---- PAGE CONFIGURATION ----
 # ==========================================================
 st.set_page_config(
     page_title="Spooky AI - Homegrown App",
