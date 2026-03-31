@@ -6,7 +6,30 @@ import os
 import pypdf
 import random
 import json
+import ssl
 from PIL import Image
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+
+# ==========================================================
+# --- TLS FIX: ENFORCE MODERN PROTOCOLS ---
+# ==========================================================
+class TLSAdapter(HTTPAdapter):
+    """Force the use of TLS 1.2 or 1.3 to avoid protocol version errors."""
+    def init_poolmanager(self, connections, maxsize, block=False):
+        ctx = ssl.create_default_context()
+        # Requires TLS 1.2 minimum
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            ssl_context=ctx
+        )
+
+# Persistent session for security API calls
+http_session = requests.Session()
+http_session.mount('https://', TLSAdapter())
 
 # ==========================================================
 # --- PAGE CONFIGURATION ---
@@ -23,7 +46,6 @@ st.set_page_config(
 # ==========================================================
 hide_st_style = """
 <style>
-/* 1. Reset & Basic UI Cleanup */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header { background: none !important; border: none !important; }
@@ -31,7 +53,6 @@ header { background: none !important; border: none !important; }
 [data-testid="stDecoration"] { display: none; }
 [data-testid="stMainBlockContainer"] { padding-top: 1.5rem !important; }
 
-/* 2. Sidebar Styling */
 [data-testid="stSidebar"] {
     background-color: #614869 !important;
 }
@@ -45,7 +66,6 @@ header { background: none !important; border: none !important; }
     color: #A5B5D1; font-size: 15px; pointer-events: none;
 }
 
-/* 3. Chat Input Cleanup */
 [data-testid="stChatInput"] > div {
     background-color: #262730 !important;
     border-radius: 12px !important;
@@ -56,7 +76,6 @@ header { background: none !important; border: none !important; }
     box-shadow: 0 0 0 0.1rem rgba(97, 72, 105, 0.2) !important;
 }
 
-/* 4. HEADER UPLOAD BUTTON STYLING */
 div.header-upload-btn button {
     background-color: #614869 !important;
     color: white !important;
@@ -67,12 +86,7 @@ div.header-upload-btn button {
     font-weight: bold !important;
     margin-top: 5px !important;
 }
-div.header-upload-btn button:hover {
-    background-color: #4B0082 !important;
-    border-color: #9370DB !important;
-}
 
-/* 5. CHAT BUBBLES (Purple Theme - Compact Version) */
 div[data-testid="stChatMessageAvatarBackground"] {
     border-radius: 8px !important;
 }
@@ -91,37 +105,17 @@ div[data-testid="stChatMessage"] {
     padding: 0.5rem 0.8rem !important;
 }
 
-div[data-testid="stChatMessage"] [data-testid="stVerticalBlock"] {
-    gap: 0rem !important;
-}
-
-/* 6. TOAST NOTIFICATIONS */
 div[data-testid="stToastContainer"] {
-    visibility: visible !important;
-    width: auto !important;
-    height: auto !important;
-    position: fixed !important;
-    top: unset !important;
     bottom: 30px !important;
     right: 30px !important;
-    left: unset !important;
     z-index: 9999999 !important;
 }
 
-/* 7. CUSTOMIZE CHECKBOX & TOGGLE */
 [data-testid="stCheckbox"] label p, [data-testid="stWidgetLabel"] p {
     font-size: 14px !important;
     color: rgb(250, 250, 250) !important;
-    font-weight: 400 !important;
 }
 
-/* 8. MAIN TITLE STYLING */
-h1 {
-    font-size: 2.5rem !important;
-    padding-top: 0rem !important;
-}
-
-/* 9. PINNED HEADER LOGIC */
 [data-testid="stVerticalBlock"] > div:has(div.fixed-header-container) {
     position: sticky !important;
     top: 0;
@@ -131,36 +125,21 @@ h1 {
     border-bottom: 1px solid rgba(250, 250, 250, 0.1);
 }
 
-/* 10. HIDE STREAMLIT BRANDING */
-[data-testid="stStatusWidget"] {
-    visibility: hidden;
-    display: none !important;
-}
-#stAppViewContainer > section:nth-child(2) > div:nth-child(1) {
-    display: none !important;
-}
-footer {
-    display: none !important;
-}
+[data-testid="stStatusWidget"] { visibility: hidden; display: none !important; }
 </style>
 """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # ==========================================================
-# --- PROMPT SECURITY GLOBALS ---
+# --- GLOBALS & STATE ---
 # ==========================================================
 PS_APP_ID = os.getenv("PS_APP_ID")
 PS_GATEWAY_URL = os.getenv("PS_GATEWAY_URL")
-
 if not PS_APP_ID or not PS_GATEWAY_URL:
-    st.error("🚨 Critical Error: PS_APP_ID or PS_GATEWAY_URL is missing. Please check your .env file.")
+    st.error("🚨 Critical Error: PS_APP_ID or PS_GATEWAY_URL missing.")
     st.stop()
-
 PS_PROTECT_API = f"{PS_GATEWAY_URL.strip('/')}/api/protect"
 
-# ==========================================================
-# --- INITIALIZE SESSION STATES ---
-# ==========================================================
 if "multi_messages" not in st.session_state:
     st.session_state.multi_messages = {"AI Gateway (OpenAI)": [], "API (Gemini)": []}
 if "session_costs" not in st.session_state:
@@ -185,12 +164,9 @@ def reset_chat():
     mode = st.session_state.current_integration
     st.session_state.multi_messages[mode] = []
     st.session_state.security_stats = {"blocks": 0, "redactions": 0}
-    st.session_state.last_latency = 0
-    st.session_state.last_violation = "None"
-    st.session_state.session_costs[mode] = 0.0
-    st.session_state.last_debug_info = None
+    st.session_state.last_latency, st.session_state.last_violation = 0, "None"
+    st.session_state.session_costs[mode], st.session_state.last_debug_info = 0.0, None
     st.session_state.uploader_key += 1
-    st.session_state.last_processed_file = None
     st.toast("History cleared.")
 
 def set_prompt(text):
@@ -199,64 +175,31 @@ def set_prompt(text):
 
 def render_debug_box(info):
     if not info: return
-    status_type = info.get('status_type', 'safe')
-    checked_p = info.get('checked_p', '')
-    debug_data = info.get('debug', {})
-
-    if status_type == "blocked":
-        label, state = "🚫 Violation Detected", "error"
-        content = None
-    elif status_type == "redacted":
-        label, state = "⚠️ Content Redacted", "complete"
-        content = f"Redacted Content: {checked_p}"
-    else:
-        label, state = "✅ Safe", "complete"
-        content = None
-
+    stype = info.get('status_type', 'safe')
+    if stype == "blocked": label, state, content = "🚫 Violation Detected", "error", None
+    elif stype == "redacted": label, state, content = "⚠️ Content Redacted", "complete", f"Redacted Content: {info.get('checked_p', '')}"
+    else: label, state, content = "✅ Safe", "complete", None
     with st.status(label, expanded=False, state=state):
         if content: st.warning(content)
-        with st.expander("🔍 View Raw API Response", expanded=False):
-            st.json(debug_data)
+        with st.expander("🔍 View Raw API Response", expanded=False): st.json(info.get('debug', {}))
 
 def get_env_bool(name, default=False):
-    value = os.getenv(name, str(default)).strip().lower()
-    return value in ("1", "true", "yes", "on")
+    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 def get_chat_models():
-    models = []
-    for model in genai.list_models():
-        supported_methods = getattr(model, "supported_generation_methods", []) or []
-        if "generateContent" in supported_methods:
-            models.append(model.name)
-    return sorted(set(models))
-
-def get_gemini_preferred_order():
-    default_model = os.getenv("DEFAULT_GEMINI_MODEL", "models/gemini-2.0-flash").strip()
-    fallback_models = [
-        item.strip() for item in os.getenv(
-            "FALLBACK_GEMINI_MODELS",
-            "models/gemini-2.0-flash,models/gemini-1.5-flash,models/gemini-1.5-pro",
-        ).split(",") if item.strip()
-    ]
-    ordered_models = []
-    for model_name in [default_model] + fallback_models:
-        if model_name and model_name not in ordered_models:
-            ordered_models.append(model_name)
-    return ordered_models
+    return sorted(set([m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]))
 
 def choose_gemini_model(available_models):
-    preferred_order = get_gemini_preferred_order()
-    for model_name in preferred_order:
-        if model_name in available_models:
-            return model_name
+    pref = [os.getenv("DEFAULT_GEMINI_MODEL", "models/gemini-2.0-flash").strip()] + \
+           [m.strip() for m in os.getenv("FALLBACK_GEMINI_MODELS", "").split(",") if m.strip()]
+    for m in pref:
+        if m in available_models: return m
     return available_models[0] if available_models else "Unavailable"
 
-def get_runtime_gemini_candidates(selected_model, available_models):
-    candidates = []
-    for model_name in [selected_model] + get_gemini_preferred_order() + list(available_models):
-        if model_name in available_models and model_name not in candidates:
-            candidates.append(model_name)
-    return candidates
+def get_runtime_gemini_candidates(sel, avail):
+    cands = [sel] + [os.getenv("DEFAULT_GEMINI_MODEL", "models/gemini-2.0-flash").strip()] + \
+            [m.strip() for m in os.getenv("FALLBACK_GEMINI_MODELS", "").split(",") if m.strip()]
+    return [m for m in cands if m in avail]
 
 # ==========================================================
 # --- SIDEBAR ---
@@ -264,109 +207,74 @@ def get_runtime_gemini_candidates(selected_model, available_models):
 with st.sidebar:
     st.header("App Settings")
     st.button("🗑️ Clear Current Chat", use_container_width=True, on_click=reset_chat)
-
     trigger_data = {}
     try:
-        with open("triggers.txt", "r") as f:
-            trigger_data = json.load(f)
-    except Exception:
-        trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
-
+        with open("triggers.txt", "r") as f: trigger_data = json.load(f)
+    except: trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
     with st.popover("💡 Triggers", use_container_width=True):
         col_t, col_r = st.columns([0.7, 0.3])
         col_t.markdown("### Sample Prompts")
-        if col_r.button("🔄", help="Reload triggers.txt"):
-            st.rerun()
-
-        for group_name, sub_items in trigger_data.items():
-            if isinstance(sub_items, dict):
-                st.markdown(f"**{group_name}**")
-                btn_names = list(sub_items.keys())
+        if col_r.button("🔄"): st.rerun()
+        for g, items in trigger_data.items():
+            if isinstance(items, dict):
+                st.markdown(f"**{g}**")
+                btn_names = list(items.keys())
                 for i in range(0, len(btn_names), 2):
                     cols = st.columns(2)
                     for j in range(2):
                         if i + j < len(btn_names):
-                            btn_label = btn_names[i+j]
-                            prompt_list = sub_items[btn_label]
-                            with cols[j]:
-                                if st.button(btn_label, use_container_width=True, key=f"trig_{group_name}_{btn_label}"):
-                                    set_prompt(random.choice(prompt_list))
-
+                            name = btn_names[i+j]
+                            if cols[j].button(name, use_container_width=True, key=f"tr_{g}_{name}"):
+                                set_prompt(random.choice(items[name]))
+    
     st.markdown("### Protection Layer")
-    ps_enabled = st.toggle("Enable Prompt Security", value=True, help="Toggle real-time security scanning on/off")
-
+    ps_enabled = st.toggle("Enable Prompt Security", value=True)
     st.divider()
     app_mode = st.radio("Select Prompt Security Integration:", ["API (Gemini)", "AI Gateway (OpenAI)"],
                         index=0 if st.session_state.current_integration == "API (Gemini)" else 1)
-
     if app_mode != st.session_state.current_integration:
-        st.session_state.current_integration = app_mode
-        st.session_state.last_debug_info = None
+        st.session_state.current_integration, st.session_state.last_debug_info = app_mode, None
         st.rerun()
-
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
     st.divider()
 
     if app_mode == "AI Gateway (OpenAI)":
         api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            st.error("🔑 OPENAI_API_KEY is missing in .env")
-            selected_model = "Unavailable"
-        else:
-            selected_model = st.selectbox("Select OpenAI Model", ["gpt-4o-mini", "gpt-4o"], index=0)
+        if not api_key: st.error("🔑 OPENAI_API_KEY missing.")
+        else: selected_model = st.selectbox("Select OpenAI Model", ["gpt-4o-mini", "gpt-4o"], index=0)
         st.caption("Mode: AI Gateway (Reverse Proxy)")
         if st.button("💰"): st.session_state.show_cost = not st.session_state.show_cost
-        sidebar_metrics_container = st.empty()
     else:
         api_key = os.getenv("GEMINI_FREE_API_KEY")
-        if not api_key:
-            st.error("🔑 GEMINI_FREE_API_KEY is missing in .env")
-            selected_model = "Unavailable"
-            debug_mode = False
+        if not api_key: st.error("🔑 GEMINI_FREE_API_KEY missing.")
         else:
             try:
                 genai.configure(api_key=api_key)
-                chat_models = get_chat_models()
-                st.session_state.gemini_available_models = chat_models
-                if not chat_models:
-                    selected_model = "Unavailable"
-                else:
-                    auto_select = get_env_bool("AUTO_SELECT_GEMINI_MODEL", True)
-                    preferred_model = choose_gemini_model(chat_models)
-                    if st.session_state.selected_gemini_model not in chat_models:
-                        st.session_state.selected_gemini_model = preferred_model
-                    
-                    if auto_select:
-                        st.session_state.selected_gemini_model = preferred_model
-                        selected_model = preferred_model
-                        st.caption(f"Auto-selected Gemini model: `{selected_model}`")
-                    else:
-                        default_ix = chat_models.index(st.session_state.selected_gemini_model)
-                        selected_model = st.selectbox("Select Gemini Model", chat_models, index=default_ix, key="gemini_model_selectbox")
-                        st.session_state.selected_gemini_model = selected_model
-            except Exception as e:
-                st.error(f"⚠️ Gemini Connection Failed: {str(e)}")
-                selected_model = "Connection Error"
-        
+                chat_m = get_chat_models()
+                st.session_state.gemini_available_models = chat_m
+                auto = get_env_bool("AUTO_SELECT_GEMINI_MODEL", True)
+                pref = choose_gemini_model(chat_m)
+                if auto: selected_model = pref; st.caption(f"Auto-selected: `{selected_model}`")
+                else: 
+                    if st.session_state.selected_gemini_model not in chat_m: st.session_state.selected_gemini_model = pref
+                    selected_model = st.selectbox("Select Gemini Model", chat_m, index=chat_m.index(st.session_state.selected_gemini_model))
+                    st.session_state.selected_gemini_model = selected_model
+            except Exception as e: st.error(str(e))
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
-        st.divider()
-        sidebar_metrics_container = st.empty()
+    
+    sidebar_metrics = st.empty()
 
 def refresh_metrics():
-    with sidebar_metrics_container.container():
+    with sidebar_metrics.container():
         if app_mode == "AI Gateway (OpenAI)":
-            if st.session_state.show_cost:
-                cost = st.session_state.session_costs["AI Gateway (OpenAI)"]
-                st.info(f"**Total Approximate Spend:** ${cost:,.6f}")
+            if st.session_state.show_cost: st.info(f"**Total Spend:** ${st.session_state.session_costs['AI Gateway (OpenAI)']:,.6f}")
         else:
             with st.expander("Session Stats [beta]", expanded=False):
                 c1, c2 = st.columns(2)
                 c1.metric("Blocks", st.session_state.security_stats["blocks"])
                 c2.metric("Redactions", st.session_state.security_stats["redactions"])
-                st.caption(f"⚡ Latency: {st.session_state.last_latency} ms")
-                st.caption(f"🚫 Violation: {st.session_state.last_violation}")
-
+                st.caption(f"⚡ Latency: {st.session_state.last_latency} ms | 🚫 Violation: {st.session_state.last_violation}")
 refresh_metrics()
 
 # ==========================================================
@@ -374,171 +282,125 @@ refresh_metrics()
 # ==========================================================
 with st.container():
     st.markdown('<div class="fixed-header-container"></div>', unsafe_allow_html=True)
-    col_title, col_upload = st.columns([0.85, 0.15])
-    with col_title:
+    col_t, col_u = st.columns([0.85, 0.15])
+    with col_t:
         st.title("Spooky 𔓎")
-        display_id = f"{PS_APP_ID[:16]}..." if len(PS_APP_ID) > 16 else PS_APP_ID
-        status_color = ":green" if ps_enabled else ":red"
-        status_text = "Connected ●" if ps_enabled else "Bypassed ○"
-        st.caption(f"Active Mode: **{app_mode}** | Model: **{selected_model}**\n\n"
-                   f"Prompt Security: {status_color}[**{status_text}**] | App-ID: **{display_id}**")
-
-    with col_upload:
+        disp_id = f"{PS_APP_ID[:16]}..."
+        c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
+        st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}**")
+    with col_u:
         st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
         with st.popover("➕ Upload"):
-            st.markdown("### 📎 Scan File")
-            uploaded_file = st.file_uploader("Select file", type=["txt", "pdf", "png", "jpg"],
-                                           label_visibility="collapsed",
-                                           key=f"file_up_{st.session_state.uploader_key}")
+            uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# SECURITY LOGIC
+# SECURITY LOGIC (FIXED WITH SESSION ADAPTER)
 def check_security_api(text, context_type="prompt"):
-    if not ps_enabled:
-        return True, text, {"status": "Security Bypassed by User Toggle"}, "safe"
+    if not ps_enabled: return True, text, {"status": "Bypassed"}, "safe"
     try:
-        payload = {context_type: text, "user": user_email}
         headers = {"Content-Type": "application/json", "APP-ID": PS_APP_ID}
-        response = requests.post(PS_PROTECT_API, json=payload, headers=headers, timeout=10)
+        # FIX: Using persistent session with TLS Adapter
+        response = http_session.post(PS_PROTECT_API, json={context_type: text, "user": user_email}, headers=headers, timeout=15)
         data = response.json()
-        result_block = data.get("result", {})
-        st.session_state.last_latency = data.get("totalLatency") or result_block.get("latency", 0)
-        content_block = result_block.get(context_type, {}) or {}
-        violations_list = content_block.get("violations", [])
-        if violations_list: st.session_state.last_violation = " + ".join(violations_list)
-        elif context_type == "prompt": st.session_state.last_violation = "None"
-
-        action = result_block.get("action", "none")
-        findings = content_block.get("findings", {})
-        turn_redactions = len(findings.get("Sensitive Data", [])) + len(findings.get("Secrets", [])) + len(findings.get("Regex", []))
-
-        if response.status_code == 403 or action == "block":
-            st.session_state.security_stats["blocks"] += 1
-            st.toast("Security Block Triggered!", icon="🚨")
-            return False, "Blocked due to policy violations", data, "blocked"
-
-        redacted_text = content_block.get("modified_text") or text
-        if turn_redactions > 0:
-            st.session_state.security_stats["redactions"] += turn_redactions
-            st.toast(f"{turn_redactions} item(s) redacted!", icon="⚠️")
-            status_type = "redacted"
-        else: status_type = "safe"
-
-        return True, redacted_text, data, status_type
+        res_b = data.get("result", {})
+        st.session_state.last_latency = data.get("totalLatency") or res_b.get("latency", 0)
+        cont_b = res_b.get(context_type, {})
+        v_list = cont_b.get("violations", [])
+        st.session_state.last_violation = " + ".join(v_list) if v_list else ("None" if context_type == "prompt" else st.session_state.last_violation)
+        
+        findings = cont_b.get("findings", {})
+        redacts = len(findings.get("Sensitive Data", [])) + len(findings.get("Secrets", [])) + len(findings.get("Regex", []))
+        
+        if response.status_code == 403 or res_b.get("action") == "block":
+            st.session_state.security_stats["blocks"] += 1; st.toast("Security Block!", icon="🚨")
+            return False, "Blocked", data, "blocked"
+        
+        redacted = cont_b.get("modified_text") or text
+        if redacts > 0: 
+            st.session_state.security_stats["redactions"] += redacts; st.toast(f"{redacts} items redacted!", icon="⚠️")
+            status = "redacted"
+        else: status = "safe"
+        return True, redacted, data, status
     except Exception as e: return True, text, {"error": str(e)}, "safe"
 
 # CHAT DISPLAY
-last_user_index = -1
-for i, msg in enumerate(st.session_state.multi_messages[app_mode]):
-    if msg["role"] == "user": last_user_index = i
+last_idx = -1
+for i, m in enumerate(st.session_state.multi_messages[app_mode]):
+    if m["role"] == "user": last_idx = i
 
-debug_box_placeholder = None
-for i, msg in enumerate(st.session_state.multi_messages[app_mode]):
-    with st.chat_message(msg["role"]): st.write(msg["content"])
-    if (i == last_user_index):
-        debug_box_placeholder = st.empty()
-        if (app_mode == "API (Gemini)" and debug_mode and st.session_state.last_debug_info):
+debug_ph = None
+for i, m in enumerate(st.session_state.multi_messages[app_mode]):
+    with st.chat_message(m["role"]): st.write(m["content"])
+    if i == last_idx:
+        debug_ph = st.empty()
+        if app_mode == "API (Gemini)" and debug_mode and st.session_state.last_debug_info:
             info = st.session_state.last_debug_info
-            with debug_box_placeholder.container(): render_debug_box(info)
+            if info.get('original_p') == m["content"]:
+                with debug_ph.container(): render_debug_box(info)
 
-# ==========================================================
-# --- CHAT INPUT & PROCESSING ---
-# ==========================================================
-chat_val = st.chat_input("How can I help you safely?")
-prompt = st.session_state.input_text if st.session_state.input_text else chat_val
+# CHAT INPUT & PROCESSING
+chat_v = st.chat_input("How can I help you safely?")
+prompt = st.session_state.input_text if st.session_state.input_text else chat_v
 st.session_state.input_text = None
 
-if (chat_val is not None or prompt is not None or uploaded_file) and selected_model not in ["Unavailable", "Connection Error"]:
-    file_text_context = ""
-    image_content = None
+if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connection Error"]:
+    ctx, img = "", None
     if uploaded_file:
-        file_type = uploaded_file.type
-        uploaded_file.seek(0)
-        if "text" in file_type or "csv" in file_type:
-            try: decoded_text = uploaded_file.read().decode('utf-8', errors='ignore')
-            except: decoded_text = "Error reading text"
-            file_text_context = f"\n\n[File: {uploaded_file.name}]\n{decoded_text}"
-        elif "pdf" in file_type:
-            try:
-                pdf_reader = pypdf.PdfReader(uploaded_file)
-                pdf_text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                file_text_context = f"\n\n[PDF: {uploaded_file.name}]\n{pdf_text}"
-            except: file_text_context = f"\n[Error reading PDF]"
-        elif "image" in file_type:
-            try: image_content = Image.open(uploaded_file)
+        t = uploaded_file.type; uploaded_file.seek(0)
+        if "text" in t or "csv" in t: ctx = f"\n\n[File: {uploaded_file.name}]\n{uploaded_file.read().decode('utf-8', errors='ignore')}"
+        elif "pdf" in t:
+            try: ctx = f"\n\n[PDF: {uploaded_file.name}]\n" + "".join([p.extract_text() or "" for p in pypdf.PdfReader(uploaded_file).pages])
+            except: ctx = "\n[PDF Error]"
+        elif "image" in t: 
+            try: img = Image.open(uploaded_file); ctx = f"\n\n[Image: {uploaded_file.name}]"
             except: pass
-
-    combined_prompt_text = f"{prompt if prompt else ''} {file_text_context}".strip()
-
-    if combined_prompt_text or image_content:
-        if debug_box_placeholder: debug_box_placeholder.empty()
-        st.session_state.multi_messages[app_mode].append({"role": "user", "content": combined_prompt_text})
+    
+    full_p = f"{prompt if prompt else ''} {ctx}".strip()
+    if full_p or img:
+        if debug_ph: debug_ph.empty()
+        st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
         with st.chat_message("user"):
-            st.write(combined_prompt_text)
-            if image_content: st.image(image_content, width=300)
-
-        active_debug_placeholder = st.empty()
-
+            st.write(full_p); 
+            if img: st.image(img, width=300)
+        
         if app_mode == "AI Gateway (OpenAI)":
-            openai_base_url = f"{PS_GATEWAY_URL.strip('/')}/v1" if ps_enabled else "https://api.openai.com/v1"
-            client = OpenAI(
-                base_url=openai_base_url,
-                api_key=api_key,
-                default_headers={"ps-app-id": PS_APP_ID, "forward-domain": "api.openai.com", "user": user_email} if ps_enabled else {}
-            )
+            base = f"{PS_GATEWAY_URL.strip('/')}/v1" if ps_enabled else "https://api.openai.com/v1"
+            client = OpenAI(base_url=base, api_key=api_key, default_headers={"ps-app-id": PS_APP_ID, "forward-domain": "api.openai.com", "user": user_email} if ps_enabled else {})
             with st.chat_message("assistant"):
                 try:
-                    response = client.chat.completions.create(
-                        model=selected_model,
-                        messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode]]
-                    )
-                    
-                    # --- FIXED: COST CALCULATION LOGIC ---
-                    u = response.usage
+                    r = client.chat.completions.create(model=selected_model, messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode]])
+                    u = r.usage
                     if u:
                         rate = 0.15 if "mini" in selected_model else 2.50
-                        # Summing prompt and completion spend based on standard rates
                         st.session_state.session_costs["AI Gateway (OpenAI)"] += (u.prompt_tokens * rate / 10**6) + (u.completion_tokens * rate*4 / 10**6)
-                    
-                    reply = response.choices[0].message.content
-                    st.write(reply)
-                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": reply})
-                    refresh_metrics()
+                    reply = r.choices[0].message.content; st.write(reply)
+                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": reply}); refresh_metrics()
                 except Exception as e: st.error(str(e))
         else:
-            is_safe, checked_p, debug, status_type = check_security_api(combined_prompt_text, "prompt")
-            st.session_state.last_debug_info = {"checked_p": checked_p, "original_p": combined_prompt_text, "debug": debug, "status_type": status_type}
-            if debug_mode:
-                with active_debug_placeholder.container(): render_debug_box(st.session_state.last_debug_info)
+            safe, check, dbg, status = check_security_api(full_p, "prompt")
+            st.session_state.last_debug_info = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+            if debug_mode: render_debug_box(st.session_state.last_debug_info)
             refresh_metrics()
-            if not is_safe:
-                msg = "Blocked due to policy violations"
-                st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": msg})
-                with st.chat_message("assistant"): st.write(msg)
+            if not safe:
+                m = "Blocked due to policy violations"
+                st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m})
+                with st.chat_message("assistant"): st.write(m)
             else:
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking..."):
                         try:
-                            gemini_content = [checked_p]
-                            if image_content: gemini_content.append(image_content)
-                            history_payload = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]} for m in st.session_state.multi_messages[app_mode][:-1]]
-                            available_models = st.session_state.gemini_available_models
-                            candidate_models = get_runtime_gemini_candidates(selected_model, available_models)
+                            cont = [check]; 
+                            if img: cont.append(img)
+                            hist = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]} for m in st.session_state.multi_messages[app_mode][:-1]]
                             res = None
-                            for model_name in candidate_models:
-                                try:
-                                    gem_model = genai.GenerativeModel(model_name)
-                                    chat = gem_model.start_chat(history=history_payload)
-                                    res = chat.send_message(gemini_content)
-                                    break
+                            for mname in get_runtime_gemini_candidates(selected_model, st.session_state.gemini_available_models):
+                                try: res = genai.GenerativeModel(mname).start_chat(history=hist).send_message(cont); break
                                 except: continue
-                            is_res_safe, safe_res, res_debug, res_status_type = check_security_api(res.text, "response")
-                            st.write(safe_res)
-                            st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": safe_res})
-                            if res_status_type in ["redacted", "blocked"]:
-                                st.session_state.last_debug_info = {"checked_p": safe_res, "original_p": res.text, "debug": res_debug, "status_type": res_status_type}
-                                if debug_mode:
-                                    with active_debug_placeholder.container(): render_debug_box(st.session_state.last_debug_info)
+                            s_safe, s_reply, s_dbg, s_status = check_security_api(res.text, "response")
+                            st.write(s_reply); st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply})
+                            if s_status in ["redacted", "blocked"]:
+                                st.session_state.last_debug_info = {"checked_p": s_reply, "original_p": res.text, "debug": s_dbg, "status_type": s_status}
+                                if debug_mode: render_debug_box(st.session_state.last_debug_info)
                             refresh_metrics()
                         except Exception as e: st.error(str(e))
 
