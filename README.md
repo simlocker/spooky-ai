@@ -26,6 +26,7 @@ A secure AI chat interface featuring Prompt Security (a SentinelOne company) int
 | `PS_GATEWAY_URL` | `https://******.prompt.security` | Change this to your Prompt Security base URL |
 | `GEMINI_FREE_API_KEY` | `-` | Your Google AI Studio API key |
 | `OPENAI_API_KEY` | `-` | Your OpenAI API key |
+| `GROQ_API_KEY` | `-` | Your Groq API key |
 
 (Please note the app won't work unless there's at least ONE API key present for one of the LLMs.)
 
