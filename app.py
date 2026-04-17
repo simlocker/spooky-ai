@@ -209,6 +209,14 @@ def get_runtime_gemini_candidates(sel, avail):
             [m.strip() for m in os.getenv("FALLBACK_GEMINI_MODELS", "").split(",") if m.strip()]
     return [m for m in cands if m in avail]
 
+# NEW FIX: Validates if a key is present and not a dummy placeholder
+def is_valid_key(key):
+    if not key: return False
+    k_lower = key.lower()
+    if "your" in k_lower or "key" in k_lower or "here" in k_lower or len(key) < 10:
+        return False
+    return True
+
 # ==========================================================
 # --- SIDEBAR ---
 # ==========================================================
@@ -250,16 +258,20 @@ with st.sidebar:
 
     if app_mode == "AI Gateway (OpenAI)":
         api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key: st.error("🔑 OPENAI_API_KEY missing."); selected_model = "Unavailable"
-        else: selected_model = st.selectbox("Select OpenAI Model", ["gpt-4o-mini", "gpt-4o"], index=0)
+        if not is_valid_key(api_key): 
+            st.error("🔑 OPENAI_API_KEY is missing or a placeholder.")
+            selected_model = "Unavailable"
+        else: 
+            selected_model = st.selectbox("Select OpenAI Model", ["gpt-4o-mini", "gpt-4o"], index=0)
         st.caption("Mode: AI Gateway (Reverse Proxy)")
         if st.button("💰"): st.session_state.show_cost = not st.session_state.show_cost
 
     elif app_mode == "API (Groq)":
         api_key = os.getenv("GROQ_API_KEY")
-        if not api_key: st.error("🔑 GROQ_API_KEY missing."); selected_model = "Unavailable"
+        if not is_valid_key(api_key): 
+            st.error("🔑 GROQ_API_KEY is missing or a placeholder.")
+            selected_model = "Unavailable"
         else: 
-            # UPGRADED: Replaced deprecated models with current valid model list 
             selected_model = st.selectbox("Select Groq Model", [
                 "openai/gpt-oss-120b", 
                 "llama-3.3-70b-versatile", 
@@ -268,11 +280,14 @@ with st.sidebar:
             ], index=0)
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
-        #st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
+        st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
 
     else:
         api_key = os.getenv("GEMINI_FREE_API_KEY")
-        if not api_key: st.error("🔑 GEMINI_FREE_API_KEY missing."); selected_model = "Unavailable"
+        if not is_valid_key(api_key): 
+            st.error("🔑 GEMINI_FREE_API_KEY is missing or a placeholder.")
+            selected_model = "Unavailable"
+            debug_mode = False
         else:
             try:
                 genai.configure(api_key=api_key)
@@ -285,9 +300,15 @@ with st.sidebar:
                     if st.session_state.selected_gemini_model not in chat_m: st.session_state.selected_gemini_model = pref
                     selected_model = st.selectbox("Select Gemini Model", chat_m, index=chat_m.index(st.session_state.selected_gemini_model))
                     st.session_state.selected_gemini_model = selected_model
-            except Exception as e: st.error(str(e))
+            except Exception as e:
+                # NEW FIX: Suppress giant tracebacks on invalid key and securely assign model
+                st.error(f"⚠️ Google API Auth Failed. Check your key.")
+                selected_model = "Connection Error"
+                st.session_state.gemini_available_models = []
+                
         st.caption("Mode: API Integration")
-        debug_mode = st.checkbox("Show Debug Info", value=False)
+        if selected_model not in ["Unavailable", "Connection Error"]:
+            debug_mode = st.checkbox("Show Debug Info", value=False)
 
     sidebar_metrics = st.empty()
 
@@ -319,6 +340,10 @@ with st.container():
         with st.popover("➕ Upload"):
             uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
         st.markdown('</div>', unsafe_allow_html=True)
+
+# NEW FIX: Visually clear warning in the main area if keys are broken
+if selected_model in ["Unavailable", "Connection Error"]:
+    st.warning(f"⚠️ **{app_mode} is not properly configured.**\n\nPlease add a valid API key to your `.env` file for this provider, or select a different integration from the sidebar.")
 
 # SECURITY LOGIC
 def check_security_api(text, context_type="prompt"):
