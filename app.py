@@ -144,7 +144,9 @@ if "security_stats" not in st.session_state:
     st.session_state.security_stats = {"blocks": 0, "redactions": 0}
 if "last_latency" not in st.session_state: st.session_state.last_latency = 0
 if "last_violation" not in st.session_state: st.session_state.last_violation = "None"
-if "current_integration" not in st.session_state: st.session_state.current_integration = "API (Gemini)"
+if "current_integration" not in st.session_state:
+    _default = os.getenv("DEFAULT_INTEGRATION", "API (Gemini)").strip()
+    st.session_state.current_integration = _default if _default in _MODES else "API (Gemini)"
 if "input_text" not in st.session_state: st.session_state.input_text = None
 if "last_debug_info" not in st.session_state: st.session_state.last_debug_info = None
 if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
