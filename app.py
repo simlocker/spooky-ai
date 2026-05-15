@@ -132,6 +132,10 @@ PS_PROTECT_API = f"{PS_GATEWAY_URL.strip('/')}/api/protect"
 
 _MODES = ["API (Gemini)", "API (Groq)", "API (Cohere)", "API (OpenRouter)", "AI Gateway (OpenAI)", "AI Gateway (Gemini)"]
 
+_GROQ_MODELS       = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b", "openai/gpt-oss-120b"]
+_COHERE_MODELS     = ["command-r7b-12-2024", "command-r-08-2024", "command-r-plus-08-2024", "command-a-03-2025"]
+_OPENROUTER_MODELS = ["deepseek/deepseek-v4-flash:free", "google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "arcee-ai/trinity-large-thinking:free", "poolside/laguna-m.1:free"]
+
 if "multi_messages" not in st.session_state:
     st.session_state.multi_messages = {m: [] for m in _MODES}
 if "session_costs" not in st.session_state:
@@ -220,26 +224,23 @@ def is_valid_key(key):
 # ==========================================================
 
 def _call_cohere(checked_prompt, history):
-    """
-    Call Cohere directly via its OpenAI-compatible endpoint.
-    checked_prompt is the PS-checked/redacted version of the current user message.
-    history includes all messages; history[:-1] are previous turns.
-    """
-    client = OpenAI(
-        base_url="https://api.cohere.com/compatibility/v1",
-        api_key=api_key,
-    )
+    """Call Cohere via its OpenAI-compatible endpoint, with automatic model fallback on rate limits."""
+    client = OpenAI(base_url="https://api.cohere.com/compatibility/v1", api_key=api_key)
     messages = [{"role": m["role"], "content": m["content"]} for m in history[:-1]]
     messages.append({"role": "user", "content": checked_prompt})
-    r = client.chat.completions.create(model=selected_model, messages=messages)
-    return r.choices[0].message.content
+    for model in _COHERE_MODELS:
+        try:
+            r = client.chat.completions.create(model=model, messages=messages)
+            return r.choices[0].message.content
+        except Exception as e:
+            if "429" in str(e):
+                continue
+            raise
+    raise Exception("All Cohere models are rate-limited. Please wait and try again.")
 
 
 def _call_openrouter(checked_prompt, history):
-    """
-    Call OpenRouter directly via its OpenAI-compatible endpoint.
-    checked_prompt is the PS-checked/redacted version of the current user message.
-    """
+    """Call OpenRouter via its OpenAI-compatible endpoint, with automatic model fallback on rate limits."""
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
@@ -247,8 +248,31 @@ def _call_openrouter(checked_prompt, history):
     )
     messages = [{"role": m["role"], "content": m["content"]} for m in history[:-1]]
     messages.append({"role": "user", "content": checked_prompt})
-    r = client.chat.completions.create(model=selected_model, messages=messages)
-    return r.choices[0].message.content
+    for model in _OPENROUTER_MODELS:
+        try:
+            r = client.chat.completions.create(model=model, messages=messages)
+            return r.choices[0].message.content
+        except Exception as e:
+            if "429" in str(e):
+                continue
+            raise
+    raise Exception("All OpenRouter models are rate-limited. Please wait and try again.")
+
+
+def _call_groq(checked_prompt, history):
+    """Call Groq via its OpenAI-compatible endpoint, with automatic model fallback on rate limits."""
+    client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
+    messages = [{"role": m["role"], "content": m["content"]} for m in history[:-1]]
+    messages.append({"role": "user", "content": checked_prompt})
+    for model in _GROQ_MODELS:
+        try:
+            r = client.chat.completions.create(model=model, messages=messages)
+            return r.choices[0].message.content
+        except Exception as e:
+            if "429" in str(e):
+                continue
+            raise
+    raise Exception("All Groq models are rate-limited. Please wait and try again.")
 
 
 def _call_openai_gateway(prompt_text, history, use_gateway=True):
@@ -376,13 +400,8 @@ with st.sidebar:
             st.error("🔑 COHERE_API_KEY is missing or a placeholder.")
             selected_model = "Unavailable"
         else:
-            selected_model = st.selectbox("Select Cohere Model", [
-                "command-r7b-12-2024",
-                "command-r-08-2024",
-                "command-r-plus-08-2024",
-                "command-a-03-2025",
-                "c4ai-aya-expanse-32b",
-            ], index=0)
+            selected_model = _COHERE_MODELS[0]
+            st.caption(f"Auto-selected: `{selected_model}`")
         st.caption("Mode: API Integration")
         if selected_model not in ["Unavailable", "Connection Error"]:
             debug_mode = st.checkbox("Show Debug Info", value=False)
@@ -393,14 +412,8 @@ with st.sidebar:
             st.error("🔑 OPENROUTER_API_KEY is missing or a placeholder.")
             selected_model = "Unavailable"
         else:
-            selected_model = st.selectbox("Select OpenRouter Model", [
-                "deepseek/deepseek-v4-flash:free",
-                "google/gemma-4-31b-it:free",
-                "google/gemma-4-26b-a4b-it:free",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-                "arcee-ai/trinity-large-thinking:free",
-                "poolside/laguna-m.1:free",
-            ], index=0)
+            selected_model = _OPENROUTER_MODELS[0]
+            st.caption(f"Auto-selected: `{selected_model}`")
         st.caption("Mode: API Integration")
         if selected_model not in ["Unavailable", "Connection Error"]:
             debug_mode = st.checkbox("Show Debug Info", value=False)
@@ -411,12 +424,8 @@ with st.sidebar:
             st.error("🔑 GROQ_API_KEY is missing or a placeholder.")
             selected_model = "Unavailable"
         else:
-            selected_model = st.selectbox("Select Groq Model", [
-                "openai/gpt-oss-120b",
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "qwen/qwen3-32b"
-            ], index=0)
+            selected_model = _GROQ_MODELS[0]
+            st.caption(f"Auto-selected: `{selected_model}`")
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
         st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
@@ -502,10 +511,13 @@ with st.container():
         c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
         st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}**")
     with col_u:
-        st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
-        with st.popover("➕ Upload"):
-            uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
-        st.markdown('</div>', unsafe_allow_html=True)
+        if not side_by_side:
+            st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
+            with st.popover("➕ Upload"):
+                uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            uploaded_file = None
 
 if selected_model in ["Unavailable", "Connection Error"]:
     st.warning(f"⚠️ **{app_mode} is not properly configured.**\n\nPlease add a valid API key to your `.env` file and restart Docker, or select a different integration.")
@@ -584,11 +596,7 @@ def get_llm_response(prompt_text, history, img=None, use_ps_gateway=None):
         elif app_mode == "API (Groq)":
             if img:
                 return None, "Image uploads are not supported by Groq text models."
-            groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
-            messages_payload = [{"role": m["role"], "content": m["content"]} for m in history[:-1]]
-            messages_payload.append({"role": "user", "content": prompt_text})
-            chat_completion = groq_client.chat.completions.create(messages=messages_payload, model=selected_model)
-            return chat_completion.choices[0].message.content, None
+            return _call_groq(prompt_text, history), None
 
     except Exception as e:
         return None, str(e)[:400]
@@ -715,11 +723,7 @@ if not st.session_state.side_by_side:
 
                                 elif app_mode == "API (Groq)":
                                     if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
-                                    groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
-                                    messages_payload = [{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode][:-1]]
-                                    messages_payload.append({"role": "user", "content": check})
-                                    chat_completion = groq_client.chat.completions.create(messages=messages_payload, model=selected_model)
-                                    res_text = chat_completion.choices[0].message.content
+                                    res_text = _call_groq(check, st.session_state.multi_messages[app_mode])
 
                                 elif app_mode == "API (Cohere)":
                                     if img: st.warning("🖼️ Image uploads are not currently supported by Cohere. Ignoring image.")
