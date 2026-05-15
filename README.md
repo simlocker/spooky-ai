@@ -1,48 +1,101 @@
-# Spooky AI 👻 - Homegrown App 
+# Spooky AI 👻
 
-A secure AI chat interface featuring Prompt Security (a SentinelOne company) integration. Both API and AI Gateway (reverse proxy) methods are supported.
+A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers and two integration methods — direct API calls and AI Gateway (reverse proxy) — so you can compare protected vs. unprotected behavior side by side.
 
-*** This app needs either a Google Gemini (Free Tier!) and/or Groq (Free!) and/or OpenAI API key to work ***
+> **Prompt Security** provides real-time protection for AI applications: it detects and blocks prompt injection attacks, redacts sensitive data (PII, secrets), and enforces usage policies — all inline, before prompts reach the LLM and before responses reach the user.
 
-## Setup Instructions
+---
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/simlocker/spooky-ai.git
-   cd spooky-ai
+## Features
 
-2. **Configure Keys and other Data**
+- 🔀 **Two integration methods**
+  - **API mode** — app calls the LLM directly; Prompt Security checks prompts/responses via its `/api/protect` endpoint
+  - **AI Gateway mode** — all traffic is routed through the Prompt Security reverse proxy, which intercepts and inspects requests inline
+- 🤖 **Six LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, OpenRouter, OpenAI, and Gemini via AI Gateway
+- 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
+- 📎 **File uploads** — attach `.txt`, `.pdf`, or image files to your prompts
+- 💡 **Trigger prompts** — pre-built sample prompts organized by attack category (prompt injection, PII, jailbreaks, etc.)
+- 👤 **User identity** — set a user email passed to Prompt Security for per-user policy enforcement
+- 📊 **Session stats** — live block/redaction counters and latency per session
 
-   Copy the example environment file and populate the required fields:
-   ```bash
-   cp .env.example .env
-   nano .env
-   # Open .env and paste your API Keys (Gemini, OpenAI, Prompt Security) and other information.
+---
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `DEMO_USER_EMAIL` | `user@example.com` | Change this depending on your Prompt Security policies defined for Homegrown Apps. |
-| `PS_APP_ID` | `-` | Your Prompt Security App Id (api key) |
-| `PS_GATEWAY_URL` | `https://******.prompt.security` | Change this to your Prompt Security base URL |
-| `GEMINI_FREE_API_KEY` | `-` | Your Google AI Studio API key |
-| `OPENAI_API_KEY` | `-` | Your OpenAI API key |
-| `GROQ_API_KEY` | `-` | Your Groq API key |
+## Requirements
 
-(Please note the app won't work unless there's at least ONE API key present for one of the LLMs.)
+- Docker and Docker Compose
+- A **Prompt Security** account with an App ID and Gateway URL (mandatory)
+- At least **one** LLM API key (Gemini Free Tier and Groq are both free)
 
-3. **Run with Docker**
-   ```bash
-   docker compose up -d --build
+---
 
-4. **Access your Instance**
+## Setup
 
-   Open your browser to http://your-ip-address:8501
+### 1. Clone the repo
 
+```bash
+git clone https://github.com/simlocker/spooky-ai.git
+cd spooky-ai
+```
 
-##
-Contributors: dawinci
+### 2. Configure environment variables
 
-<br><br><br>
-More detailed information coming soon....
-<br>
-Gastón Z - 2026
+```bash
+cp .env.example .env
+nano .env
+```
+
+Fill in your keys and Prompt Security credentials:
+
+| Variable | Required | Description |
+| :--- | :---: | :--- |
+| `PS_APP_ID` | ✅ | Your Prompt Security App ID |
+| `PS_GATEWAY_URL` | ✅ | Your Prompt Security Gateway base URL (e.g. `https://xxxxx.prompt.security`) |
+| `DEMO_USER_EMAIL` | — | Email identity sent to PS for per-user policies (default: `user@example.com`) |
+| `GEMINI_FREE_API_KEY` | ⬇️ one required | Google AI Studio key — [get one free](https://aistudio.google.com/app/apikey) |
+| `GROQ_API_KEY` | ⬇️ one required | Groq key — [get one free](https://console.groq.com/keys) |
+| `COHERE_API_KEY` | optional | Cohere key — [free trial](https://dashboard.cohere.com/api-keys) |
+| `OPENROUTER_API_KEY` | optional | OpenRouter key — [free models available](https://openrouter.ai/keys) |
+| `OPENAI_API_KEY` | optional | OpenAI key (also required for AI Gateway OpenAI mode) |
+
+### 3. Run with Docker
+
+```bash
+docker compose up -d --build
+```
+
+### 4. Open the app
+
+Navigate to **http://your-ip-address:8501** in your browser.
+
+---
+
+## Integration Methods Explained
+
+### API Mode
+The app calls the LLM provider directly. Before each call, the prompt is sent to the Prompt Security `/api/protect` endpoint — which either blocks it, redacts sensitive content, or passes it through clean. The LLM response goes through the same check before being shown to the user.
+
+### AI Gateway Mode (Reverse Proxy)
+All LLM traffic is routed through the Prompt Security Gateway (`PS_GATEWAY_URL/v1/`). The gateway inspects requests inline and forwards them to the provider using a `forward-domain` header. Currently supported providers via gateway: **OpenAI** and **Gemini**.
+
+---
+
+## Project Structure
+
+```
+spooky-ai/
+├── app.py                 # Main Streamlit application
+├── triggers.txt           # Sample prompts shown in the sidebar
+├── requirements.txt       # Python dependencies
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example           # Environment variable template
+└── .streamlit/
+    └── config.toml        # UI theme configuration
+```
+
+---
+
+## Contributors
+
+- **dawinci**
+- **Gastón Z** — 2025
