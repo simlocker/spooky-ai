@@ -444,7 +444,7 @@ with st.sidebar:
                 "gemini-1.5-pro",
             ], index=0)
         st.caption("Mode: AI Gateway (Reverse Proxy)")
-        st.info("🛡️ PS Gateway intercepts and checks both prompt and response inline before forwarding to Gemini.")
+        #st.info("🛡️ PS Gateway intercepts and checks both prompt and response inline before forwarding to Gemini.")
 
     elif app_mode == "AI Gateway (OpenAI)":
         api_key = os.getenv("OPENAI_API_KEY")
@@ -458,7 +458,7 @@ with st.sidebar:
                 "gpt-3.5-turbo",
             ], index=0)
         st.caption("Mode: AI Gateway (Reverse Proxy)")
-        st.info("🛡️ PS Gateway intercepts and checks both prompt and response inline before forwarding to OpenAI.")
+        #st.info("🛡️ PS Gateway intercepts and checks both prompt and response inline before forwarding to OpenAI.")
 
     else:  # API (Gemini)
         api_key = os.getenv("GEMINI_FREE_API_KEY")
