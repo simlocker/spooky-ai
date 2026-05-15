@@ -430,7 +430,7 @@ with st.sidebar:
             st.caption(f"Auto-selected: `{selected_model}`")
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
-        st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
+        #st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
 
     elif app_mode == "AI Gateway (Gemini)":
         api_key = os.getenv("GEMINI_FREE_API_KEY")
