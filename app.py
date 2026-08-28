@@ -200,6 +200,17 @@ def is_valid_key(key):
     if "your" in k_lower or "key" in k_lower or "here" in k_lower or len(key) < 10: return False
     return True
 
+def get_api_history(chat_history):
+    """Converts mixed chat session history into OpenAI/Gemini compliant multi-turn history."""
+    clean_history = []
+    for item in chat_history:
+        if item.get("role") == "side_by_side":
+            clean_history.append({"role": "user", "content": item["user_prompt"]})
+            clean_history.append({"role": "assistant", "content": item["protected_response"]})
+        elif "role" in item and "content" in item:
+            clean_history.append({"role": item["role"], "content": item["content"]})
+    return clean_history
+
 # Helper generator functions for LLM API calls
 def generate_gemini_response(genai_client, model_sel, chat_history, current_prompt, img_obj=None):
     contents = []
@@ -303,7 +314,7 @@ with st.sidebar:
             ], index=0)
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
-        st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
+        #st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
 
     elif app_mode == "API (Gemini)":
         api_key = os.getenv("GEMINI_FREE_API_KEY")
@@ -395,20 +406,29 @@ def check_security_api(text, context_type="prompt"):
         return True, redacted, data, status
     except Exception as e: return True, text, {"error": str(e)}, "safe"
 
-# CHAT DISPLAY
-last_idx = -1
-for i, m in enumerate(st.session_state.multi_messages[app_mode]):
-    if m["role"] == "user": last_idx = i
-
+# CHAT DISPLAY (Supports Standard + Side-by-Side turn rendering)
 debug_ph = None
-for i, m in enumerate(st.session_state.multi_messages[app_mode]):
-    with st.chat_message(m["role"]): st.write(m["content"])
-    if i == last_idx:
+messages_list = st.session_state.multi_messages[app_mode]
+
+for i, m in enumerate(messages_list):
+    if m.get("role") == "side_by_side":
+        with st.chat_message("user"):
+            st.write(m["user_prompt"])
+        c_prot, c_unprot = st.columns(2)
+        with c_prot:
+            st.markdown("#### 🛡️ Protected Mode")
+            st.write(m["protected_response"])
+        with c_unprot:
+            st.markdown("#### ⚠️ Unprotected Mode")
+            st.write(m["unprotected_response"])
+    else:
+        with st.chat_message(m["role"]):
+            st.write(m["content"])
+
+    if i == len(messages_list) - 1 and "API" in app_mode and debug_mode and st.session_state.last_debug_info:
         debug_ph = st.empty()
-        if "API" in app_mode and debug_mode and st.session_state.last_debug_info:
-            info = st.session_state.last_debug_info
-            if info.get('original_p') == m["content"]:
-                with debug_ph.container(): render_debug_box(info)
+        with debug_ph.container():
+            render_debug_box(st.session_state.last_debug_info)
 
 # CHAT INPUT & PROCESSING
 chat_v = st.chat_input("How can I help you safely?")
@@ -430,13 +450,14 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
     full_p = f"{prompt if prompt else ''} {ctx}".strip()
     if full_p or img:
         if debug_ph: debug_ph.empty()
-        st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
-        with st.chat_message("user"):
-            st.write(full_p);
-            if img: st.image(img, width=300)
 
         # --- OPENAI GATEWAY METHOD ---
         if app_mode == "AI Gateway (OpenAI)":
+            st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
+            with st.chat_message("user"):
+                st.write(full_p)
+                if img: st.image(img, width=300)
+
             base_url = f"{PS_GATEWAY_URL.strip('/')}/v1" if ps_enabled else "https://api.openai.com/v1"
             client = OpenAI(
                 base_url=base_url,
@@ -445,7 +466,10 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
             )
             with st.chat_message("assistant"):
                 try:
-                    r = client.chat.completions.create(model=selected_model, messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode]])
+                    r = client.chat.completions.create(
+                        model=selected_model, 
+                        messages=get_api_history(st.session_state.multi_messages[app_mode])
+                    )
                     u = r.usage
                     if u:
                         rate = 0.15 if "mini" in selected_model else 2.50
@@ -458,10 +482,16 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
 
         # --- API METHOD (GEMINI & GROQ) ---
         else:
-            history = st.session_state.multi_messages[app_mode][:-1]
+            history = get_api_history(st.session_state.multi_messages[app_mode])
 
             if side_by_side:
+                with st.chat_message("user"):
+                    st.write(full_p)
+                    if img: st.image(img, width=300)
+
                 col_prot, col_unprot = st.columns(2)
+                protected_final = ""
+                unprotected_final = ""
 
                 # LEFT COLUMN: PROTECTED
                 with col_prot:
@@ -471,7 +501,8 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
                     if debug_mode: render_debug_box(st.session_state.last_debug_info)
 
                     if not safe:
-                        st.error("🚫 Prompt Blocked by Policy")
+                        protected_final = "🚫 Prompt Blocked by Policy"
+                        st.error(protected_final)
                     else:
                         with st.spinner("Generating protected output..."):
                             try:
@@ -483,13 +514,16 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
                                 
                                 if res_text:
                                     s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
-                                    st.write(s_reply)
+                                    protected_final = s_reply
+                                    st.write(protected_final)
                                 else:
-                                    st.error("No response generated.")
+                                    protected_final = "No response generated."
+                                    st.error(protected_final)
                             except Exception as e:
-                                st.error(f"⚠️ Error: {str(e)[:150]}")
+                                protected_final = f"⚠️ Error: {str(e)[:150]}"
+                                st.error(protected_final)
 
-                # RIGHT COLUMN: UNPROTECTED
+                # RIGHT COLUMN: UNPROTECTED (Raw input)
                 with col_unprot:
                     st.markdown("#### ⚠️ Unprotected Mode")
                     with st.spinner("Generating raw output..."):
@@ -500,16 +534,31 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
                                 raw_res = generate_groq_response(api_key, selected_model, history, full_p)
                             
                             if raw_res:
-                                st.write(raw_res)
+                                unprotected_final = raw_res
+                                st.write(unprotected_final)
                             else:
-                                st.error("No response generated.")
+                                unprotected_final = "No response generated."
+                                st.error(unprotected_final)
                         except Exception as e:
-                            st.error(f"⚠️ Error: {str(e)[:150]}")
+                            unprotected_final = f"⚠️ Error: {str(e)[:150]}"
+                            st.error(unprotected_final)
 
+                # Append whole side-by-side snapshot into session memory
+                st.session_state.multi_messages[app_mode].append({
+                    "role": "side_by_side",
+                    "user_prompt": full_p,
+                    "protected_response": protected_final,
+                    "unprotected_response": unprotected_final
+                })
                 refresh_metrics()
 
             else:
                 # SINGLE STANDARD VIEW
+                st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
+                with st.chat_message("user"):
+                    st.write(full_p)
+                    if img: st.image(img, width=300)
+
                 safe, check, dbg, status = check_security_api(full_p, "prompt")
                 st.session_state.last_debug_info = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
                 if debug_mode: render_debug_box(st.session_state.last_debug_info)
