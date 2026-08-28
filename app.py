@@ -200,6 +200,37 @@ def is_valid_key(key):
     if "your" in k_lower or "key" in k_lower or "here" in k_lower or len(key) < 10: return False
     return True
 
+# Helper generator functions for LLM API calls
+def generate_gemini_response(genai_client, model_sel, chat_history, current_prompt, img_obj=None):
+    contents = []
+    for m in chat_history:
+        role = "user" if m["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+    
+    current_parts = [types.Part.from_text(text=current_prompt)]
+    if img_obj: current_parts.append(img_obj)
+    contents.append(types.Content(role="user", parts=current_parts))
+
+    for mname in get_runtime_gemini_candidates(model_sel, st.session_state.gemini_available_models):
+        try:
+            res = genai_client.models.generate_content(model=mname, contents=contents)
+            if res and res.text: return res.text
+        except Exception as e:
+            if "429" in str(e): continue
+            else: raise e
+    return None
+
+def generate_groq_response(api_key_str, model_sel, chat_history, current_prompt):
+    groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key_str)
+    messages_payload = [{"role": m["role"], "content": m["content"]} for m in chat_history]
+    messages_payload.append({"role": "user", "content": current_prompt})
+
+    chat_completion = groq_client.chat.completions.create(
+        messages=messages_payload,
+        model=model_sel
+    )
+    return chat_completion.choices[0].message.content
+
 # ==========================================================
 # --- SIDEBAR ---
 # ==========================================================
@@ -228,11 +259,12 @@ with st.sidebar:
 
     st.markdown("### Protection Layer")
     ps_enabled = st.toggle("Enable Prompt Security", value=True)
+    side_by_side = st.toggle("🔀 Side-by-side Comparison", value=False)
     st.divider()
-    
+
     # Integration Method Selection
     integration_method = st.radio("Integration Method:", ["API", "AI Gateway"], index=0)
-    
+
     if integration_method == "AI Gateway":
         app_mode = "AI Gateway (OpenAI)"
     else:
@@ -264,11 +296,11 @@ with st.sidebar:
             selected_model = "Unavailable"
         else:
             selected_model = st.selectbox("Select Groq Model", [
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "groq/compound",
-            "groq/compound-mini"
-        ], index=0)
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+                "groq/compound",
+                "groq/compound-mini"
+            ], index=0)
         st.caption("Mode: API Integration")
         debug_mode = st.checkbox("Show Debug Info", value=False)
         st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
@@ -287,11 +319,11 @@ with st.sidebar:
                 st.session_state.gemini_available_models = chat_m
                 auto = get_env_bool("AUTO_SELECT_GEMINI_MODEL", True)
                 pref = choose_gemini_model(chat_m)
-                if auto: 
+                if auto:
                     selected_model = pref
                     st.caption(f"Auto-selected: `{selected_model}`")
                 else:
-                    if st.session_state.selected_gemini_model not in chat_m: 
+                    if st.session_state.selected_gemini_model not in chat_m:
                         st.session_state.selected_gemini_model = pref
                     selected_model = st.selectbox("Select Gemini Model", chat_m, index=chat_m.index(st.session_state.selected_gemini_model))
                     st.session_state.selected_gemini_model = selected_model
@@ -426,75 +458,91 @@ if (prompt or uploaded_file) and selected_model not in ["Unavailable", "Connecti
 
         # --- API METHOD (GEMINI & GROQ) ---
         else:
-            # 1. Protect Prompt
-            safe, check, dbg, status = check_security_api(full_p, "prompt")
-            st.session_state.last_debug_info = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
-            if debug_mode: render_debug_box(st.session_state.last_debug_info)
-            refresh_metrics()
+            history = st.session_state.multi_messages[app_mode][:-1]
 
-            if not safe:
-                m = "Blocked due to policy violations"
-                st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m})
-                with st.chat_message("assistant"): st.write(m)
-            else:
-                with st.chat_message("assistant"):
-                    with st.spinner("Thinking..."):
+            if side_by_side:
+                col_prot, col_unprot = st.columns(2)
+
+                # LEFT COLUMN: PROTECTED
+                with col_prot:
+                    st.markdown("#### 🛡️ Protected Mode")
+                    safe, check, dbg, status = check_security_api(full_p, "prompt")
+                    st.session_state.last_debug_info = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+                    if debug_mode: render_debug_box(st.session_state.last_debug_info)
+
+                    if not safe:
+                        st.error("🚫 Prompt Blocked by Policy")
+                    else:
+                        with st.spinner("Generating protected output..."):
+                            try:
+                                if app_mode == "API (Gemini)":
+                                    res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
+                                elif app_mode == "API (Groq)":
+                                    if img: st.warning("🖼️ Image uploads are not supported by Groq.")
+                                    res_text = generate_groq_response(api_key, selected_model, history, check)
+                                
+                                if res_text:
+                                    s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                                    st.write(s_reply)
+                                else:
+                                    st.error("No response generated.")
+                            except Exception as e:
+                                st.error(f"⚠️ Error: {str(e)[:150]}")
+
+                # RIGHT COLUMN: UNPROTECTED
+                with col_unprot:
+                    st.markdown("#### ⚠️ Unprotected Mode")
+                    with st.spinner("Generating raw output..."):
                         try:
-                            res_text = None
-
-                            # 2A. Generate Response (GEMINI via NEW SDK)
                             if app_mode == "API (Gemini)":
-                                genai_client = st.session_state.genai_client
+                                raw_res = generate_gemini_response(st.session_state.genai_client, selected_model, history, full_p, img)
+                            elif app_mode == "API (Groq)":
+                                raw_res = generate_groq_response(api_key, selected_model, history, full_p)
+                            
+                            if raw_res:
+                                st.write(raw_res)
+                            else:
+                                st.error("No response generated.")
+                        except Exception as e:
+                            st.error(f"⚠️ Error: {str(e)[:150]}")
 
-                                contents = []
-                                for m in st.session_state.multi_messages[app_mode][:-1]:
-                                    role = "user" if m["role"] == "user" else "model"
-                                    contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+                refresh_metrics()
 
-                                current_parts = [types.Part.from_text(text=check)]
-                                if img: current_parts.append(img)
-                                contents.append(types.Content(role="user", parts=current_parts))
+            else:
+                # SINGLE STANDARD VIEW
+                safe, check, dbg, status = check_security_api(full_p, "prompt")
+                st.session_state.last_debug_info = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+                if debug_mode: render_debug_box(st.session_state.last_debug_info)
+                refresh_metrics()
 
-                                res = None
-                                for mname in get_runtime_gemini_candidates(selected_model, st.session_state.gemini_available_models):
-                                    try:
-                                        res = genai_client.models.generate_content(
-                                            model=mname,
-                                            contents=contents
-                                        )
-                                        break
-                                    except Exception as e:
-                                        if "429" in str(e): continue
-                                        else: raise e
-                                if res and res.text:
-                                    res_text = res.text
+                if not safe:
+                    m = "Blocked due to policy violations"
+                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m})
+                    with st.chat_message("assistant"): st.write(m)
+                else:
+                    with st.chat_message("assistant"):
+                        with st.spinner("Thinking..."):
+                            try:
+                                res_text = None
+                                if app_mode == "API (Gemini)":
+                                    res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
+                                elif app_mode == "API (Groq)":
+                                    if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
+                                    res_text = generate_groq_response(api_key, selected_model, history, check)
+
+                                if res_text:
+                                    s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                                    st.write(s_reply)
+                                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply})
+                                    if s_status in ["redacted", "blocked"]:
+                                        st.session_state.last_debug_info = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
+                                        if debug_mode: render_debug_box(st.session_state.last_debug_info)
                                 else:
                                     st.error("🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds.")
 
-                            # 2B. Generate Response (GROQ)
-                            elif app_mode == "API (Groq)":
-                                if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
-                                groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
-                                messages_payload = [{"role": m["role"], "content": m["content"]} for m in st.session_state.multi_messages[app_mode][:-1]]
-                                messages_payload.append({"role": "user", "content": check})
-
-                                chat_completion = groq_client.chat.completions.create(
-                                    messages=messages_payload,
-                                    model=selected_model
-                                )
-                                res_text = chat_completion.choices[0].message.content
-
-                            # 3. Protect Response
-                            if res_text:
-                                s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
-                                st.write(s_reply); st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply})
-                                if s_status in ["redacted", "blocked"]:
-                                    st.session_state.last_debug_info = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
-                                    if debug_mode: render_debug_box(st.session_state.last_debug_info)
-
-                            refresh_metrics()
-                        except Exception as e:
-                            if "401" in str(e): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
-                            else: st.error(f"⚠️ Error: {str(e)[:200]}...")
+                                refresh_metrics()
+                            except Exception as e:
+                                if "401" in str(e): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
+                                else: st.error(f"⚠️ Error: {str(e)[:200]}...")
 
 st.sidebar.markdown('<div class="sidebar-footer">Made by Gastón Z and AI 🤖</div>', unsafe_allow_html=True)
