@@ -167,19 +167,19 @@ PS_POLICY_NAME = os.getenv("PS_POLICY_NAME", "").strip()
 # ==========================================================
 CUSTOM_MESSAGES = {
     "blocked_prompt": (
-        "🚫 **Este contenido no puede enviarse a la IA.**\n\n"
-        "Se detectó información confidencial (datos personales sensibles, historial médico, o afines) "
-        "en tu mensaje o archivo adjunto.\n\n"
-        "El envío no está permitido según la política corporativa. "
-        "Puede reformular la consulta eliminando datos de cliente, importes, márgenes "
-        "o información personal antes de continuar."
+        "🚫 **This content cannot be sent to the AI.**\n\n"
+        "Confidential information (sensitive personal data, medical history, or similar) "
+        "was detected in your message or attached file.\n\n"
+        "Sending is not permitted under corporate policy. "
+        "You can rephrase your request by removing customer data, amounts, margins, "
+        "or personal information before continuing."
     ),
     "redacted_notice": (
-        "⚠️ Se detectó y redactó información sensible en tu mensaje o archivo antes de continuar."
+        "⚠️ Sensitive information was detected and redacted from your message or file before continuing."
     ),
     "security_check_error": (
-        "❌ **No se pudo verificar este contenido con el servicio de seguridad** (error del backend). "
-        "El contenido se envió sin inspección completa — trátalo como no verificado."
+        "❌ **This content could not be verified with the security service** (backend error). "
+        "The content was sent without full inspection — treat it as unverified."
     ),
 }
 
