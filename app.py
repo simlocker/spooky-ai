@@ -424,7 +424,7 @@ with st.sidebar:
     st.markdown("### Protection Layer")
     ps_enabled = st.toggle("Enable Prompt Security", value=True)
     side_by_side = st.toggle("🔀 Side-by-side Comparison", value=False)
-    st.divider()
+
 
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
     st.divider()
