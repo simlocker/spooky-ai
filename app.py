@@ -199,15 +199,14 @@ def show_security_error_notice():
         st.error(CUSTOM_MESSAGES["security_check_error"])
 
 if "multi_messages" not in st.session_state:
-    st.session_state.multi_messages = {"AI Gateway (OpenAI)": [], "API (Gemini)": [], "API (Groq)": [], "API (Cohere)": [], "API (OpenRouter)": []}
+    st.session_state.multi_messages = {"API (Gemini)": [], "API (Groq)": [], "API (Cohere)": [], "API (OpenRouter)": []}
 if "session_costs" not in st.session_state:
-    st.session_state.session_costs = {"AI Gateway (OpenAI)": 0.0, "API (Gemini)": 0.0, "API (Groq)": 0.0, "API (Cohere)": 0.0, "API (OpenRouter)": 0.0}
+    st.session_state.session_costs = {"API (Gemini)": 0.0, "API (Groq)": 0.0, "API (Cohere)": 0.0, "API (OpenRouter)": 0.0}
 if "security_stats" not in st.session_state:
     st.session_state.security_stats = {"blocks": 0, "redactions": 0}
 if "last_latency" not in st.session_state: st.session_state.last_latency = 0
 if "last_violation" not in st.session_state: st.session_state.last_violation = "None"
 if "current_integration" not in st.session_state: st.session_state.current_integration = "API (Groq)"
-if "show_cost" not in st.session_state: st.session_state.show_cost = False
 if "input_text" not in st.session_state: st.session_state.input_text = None
 if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
 if "last_processed_file" not in st.session_state: st.session_state.last_processed_file = None
@@ -425,18 +424,12 @@ with st.sidebar:
     ps_enabled = st.toggle("Enable Prompt Security", value=True)
     side_by_side = st.toggle("🔀 Side-by-side Comparison", value=False)
 
-
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
     st.divider()
 
-    # Integration Method Selection
-    integration_method = st.radio("Integration Method:", ["API", "AI Gateway"], index=0)
-
-    if integration_method == "AI Gateway":
-        app_mode = "AI Gateway (OpenAI)"
-    else:
-        provider = st.selectbox("Provider:", ["Groq", "Gemini", "Cohere", "OpenRouter"], index=0)
-        app_mode = f"API ({provider})"
+    # Provider Selection — API integration is now the only supported method
+    provider = st.selectbox("Provider:", ["Groq", "Gemini", "Cohere", "OpenRouter"], index=0)
+    app_mode = f"API ({provider})"
 
     if app_mode != st.session_state.current_integration:
         st.session_state.current_integration = app_mode
@@ -447,22 +440,7 @@ with st.sidebar:
     # is a direct continuation of choosing a provider (Gemini has no manual
     # selector, but its "Auto-selected: ..." caption lands here too, for the
     # same reason).
-    if app_mode == "AI Gateway (OpenAI)":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not is_valid_key(api_key):
-            st.error("🔑 OPENAI_API_KEY is missing or a placeholder.")
-            selected_model = "Unavailable"
-        else:
-            selected_model = st.selectbox("Select OpenAI Model", ["gpt-4o-mini", "gpt-4o"], index=0)
-        st.caption("Mode: AI Gateway (Reverse Proxy)")
-        if st.button("💰"): st.session_state.show_cost = not st.session_state.show_cost
-        # Gateway mode protects traffic transparently via the reverse proxy —
-        # there's no local prompt/response check to show debug info for, but
-        # both flags must still exist so the shared history-replay loop below
-        # doesn't hit a NameError when it checks them for this mode's messages.
-        debug_prompt, debug_response = False, False
-
-    elif app_mode == "API (Groq)":
+    if app_mode == "API (Groq)":
         api_key = os.getenv("GROQ_API_KEY")
         if not is_valid_key(api_key):
             st.error("🔑 GROQ_API_KEY is missing or a placeholder.")
@@ -567,14 +545,11 @@ with st.sidebar:
 
 def refresh_metrics():
     with sidebar_metrics.container():
-        if "AI Gateway" in app_mode:
-            if st.session_state.show_cost: st.info(f"**Total Spend:** ${st.session_state.session_costs[app_mode]:,.6f}")
-        else:
-            with st.expander("Session Stats [beta]", expanded=False):
-                c1, c2 = st.columns(2)
-                c1.metric("Blocks", st.session_state.security_stats["blocks"])
-                c2.metric("Redactions", st.session_state.security_stats["redactions"])
-                st.caption(f"⚡ Latency: {st.session_state.last_latency} ms | 🚫 Violation: {st.session_state.last_violation}")
+        with st.expander("Session Stats [beta]", expanded=False):
+            c1, c2 = st.columns(2)
+            c1.metric("Blocks", st.session_state.security_stats["blocks"])
+            c2.metric("Redactions", st.session_state.security_stats["redactions"])
+            st.caption(f"⚡ Latency: {st.session_state.last_latency} ms | 🚫 Violation: {st.session_state.last_violation}")
 refresh_metrics()
 
 # ==========================================================
@@ -793,154 +768,23 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
 
     full_p = f"{prompt if prompt else ''} {ctx}".strip()
     if full_p or img:
-        # --- OPENAI GATEWAY METHOD ---
-        if app_mode == "AI Gateway (OpenAI)":
-            st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
+        # --- API METHOD ---
+        history = get_api_history(st.session_state.multi_messages[app_mode])
+
+        if side_by_side:
             with st.chat_message("user"):
                 st.write(full_p)
                 if img: st.image(img, width=300)
 
-            base_url = f"{PS_GATEWAY_URL.strip('/')}/v1" if ps_enabled else "https://api.openai.com/v1"
-            client = OpenAI(
-                base_url=base_url,
-                api_key=api_key,
-                default_headers={"ps-app-id": PS_APP_ID, "forward-domain": "api.openai.com", "user": user_email} if ps_enabled else {}
-            )
-            with st.chat_message("assistant"):
-                try:
-                    r = client.chat.completions.create(
-                        model=selected_model, 
-                        messages=get_api_history(st.session_state.multi_messages[app_mode])
-                    )
-                    u = r.usage
-                    if u:
-                        rate = 0.15 if "mini" in selected_model else 2.50
-                        st.session_state.session_costs["AI Gateway (OpenAI)"] += (u.prompt_tokens * rate / 10**6) + (u.completion_tokens * rate*4 / 10**6)
-                    reply = r.choices[0].message.content; render_answer(reply)
-                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": reply}); refresh_metrics()
-                except Exception as e:
-                    if "401" in str(e): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid or you forgot to restart Docker after editing .env.")
-                    else: st.error(f"⚠️ Error: {str(e)[:200]}...")
+            col_prot, col_unprot = st.columns(2)
+            protected_final = ""
+            unprotected_final = ""
+            turn_debug = {"prompt_check": None, "response_check": None}
+            turn_notices = []
 
-        # --- API METHOD (GEMINI & GROQ) ---
-        else:
-            history = get_api_history(st.session_state.multi_messages[app_mode])
-
-            if side_by_side:
-                with st.chat_message("user"):
-                    st.write(full_p)
-                    if img: st.image(img, width=300)
-
-                col_prot, col_unprot = st.columns(2)
-                protected_final = ""
-                unprotected_final = ""
-                turn_debug = {"prompt_check": None, "response_check": None}
-                turn_notices = []
-
-                # LEFT COLUMN: PROTECTED
-                with col_prot:
-                    st.markdown("#### 🛡️ Protected Mode")
-                    safe, check, dbg, status = check_security_api(full_p, "prompt")
-                    turn_debug["prompt_check"] = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
-                    if status == "redacted":
-                        show_redacted_notice()
-                        turn_notices.append("redacted_prompt")
-                    elif status == "error":
-                        show_security_error_notice()
-                        turn_notices.append("error_prompt")
-                    if debug_prompt:
-                        st.caption("🔎 Prompt Check")
-                        render_debug_box(turn_debug["prompt_check"])
-
-                    if not safe:
-                        protected_final = CUSTOM_MESSAGES["blocked_prompt"]
-                        st.error(protected_final)
-                    else:
-                        with st.spinner("Generating protected output..."):
-                            try:
-                                if app_mode == "API (Gemini)":
-                                    res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
-                                elif app_mode == "API (Groq)":
-                                    if img: st.warning("🖼️ Image uploads are not supported by Groq.")
-                                    res_text = generate_groq_response(api_key, selected_model, history, check)
-                                elif app_mode == "API (Cohere)":
-                                    if img: st.warning("🖼️ Image uploads are not supported by Cohere in this app.")
-                                    res_text = generate_cohere_response(api_key, selected_model, history, check)
-                                elif app_mode == "API (OpenRouter)":
-                                    if img: st.warning("🖼️ Image uploads are not supported by OpenRouter in this app.")
-                                    res_text = generate_openrouter_response(api_key, selected_model, history, check)
-                                
-                                if res_text:
-                                    # IMPORTANT: this response-level check is what actually catches
-                                    # PII the model echoes back (e.g. an email address repeated in
-                                    # its answer). Its status must be surfaced — previously it was
-                                    # computed but discarded, which is why the UI could show "Safe"
-                                    # even while the response was being redacted underneath.
-                                    s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
-                                    turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
-                                    protected_final = s_reply
-                                    if s_status == "redacted":
-                                        show_redacted_notice()
-                                        turn_notices.append("redacted_response")
-                                    elif s_status == "error":
-                                        show_security_error_notice()
-                                        turn_notices.append("error_response")
-                                    if debug_response:
-                                        st.caption("🔎 Response Check")
-                                        render_debug_box(turn_debug["response_check"])
-                                    render_answer(protected_final)
-                                else:
-                                    protected_final = "No response generated."
-                                    st.error(protected_final)
-                            except Exception as e:
-                                protected_final = f"⚠️ Error: {str(e)[:150]}"
-                                st.error(protected_final)
-
-                # RIGHT COLUMN: UNPROTECTED (Raw input)
-                with col_unprot:
-                    st.markdown("#### ⚠️ Unprotected Mode")
-                    with st.spinner("Generating raw output..."):
-                        try:
-                            if app_mode == "API (Gemini)":
-                                raw_res = generate_gemini_response(st.session_state.genai_client, selected_model, history, full_p, img)
-                            elif app_mode == "API (Groq)":
-                                raw_res = generate_groq_response(api_key, selected_model, history, full_p)
-                            elif app_mode == "API (Cohere)":
-                                raw_res = generate_cohere_response(api_key, selected_model, history, full_p)
-                            elif app_mode == "API (OpenRouter)":
-                                raw_res = generate_openrouter_response(api_key, selected_model, history, full_p)
-                            
-                            if raw_res:
-                                unprotected_final = raw_res
-                                render_answer(unprotected_final)
-                            else:
-                                unprotected_final = "No response generated."
-                                st.error(unprotected_final)
-                        except Exception as e:
-                            unprotected_final = f"⚠️ Error: {str(e)[:150]}"
-                            st.error(unprotected_final)
-
-                # Append whole side-by-side snapshot into session memory
-                st.session_state.multi_messages[app_mode].append({
-                    "role": "side_by_side",
-                    "user_prompt": full_p,
-                    "protected_response": protected_final,
-                    "unprotected_response": unprotected_final,
-                    "debug": turn_debug,
-                    "notices": turn_notices
-                })
-                refresh_metrics()
-
-            else:
-                # SINGLE STANDARD VIEW
-                st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
-                with st.chat_message("user"):
-                    st.write(full_p)
-                    if img: st.image(img, width=300)
-
-                turn_debug = {"prompt_check": None, "response_check": None}
-                turn_notices = []
-
+            # LEFT COLUMN: PROTECTED
+            with col_prot:
+                st.markdown("#### 🛡️ Protected Mode")
                 safe, check, dbg, status = check_security_api(full_p, "prompt")
                 turn_debug["prompt_check"] = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
                 if status == "redacted":
@@ -949,70 +793,171 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 elif status == "error":
                     show_security_error_notice()
                     turn_notices.append("error_prompt")
-                # Shown right here, BEFORE the LLM is even called — this is when
-                # the prompt check actually happens. Previously this box only
-                # appeared after the model's answer was already on screen,
-                # which made it look like it came from checking the response.
                 if debug_prompt:
                     st.caption("🔎 Prompt Check")
                     render_debug_box(turn_debug["prompt_check"])
-                refresh_metrics()
 
                 if not safe:
-                    m = CUSTOM_MESSAGES["blocked_prompt"]
-                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m, "debug": turn_debug, "notices": turn_notices})
-                    with st.chat_message("assistant"):
-                        render_answer(m)
+                    protected_final = CUSTOM_MESSAGES["blocked_prompt"]
+                    st.error(protected_final)
                 else:
-                    res_text, gen_error = None, None
-                    with st.spinner("Thinking..."):
+                    with st.spinner("Generating protected output..."):
                         try:
                             if app_mode == "API (Gemini)":
                                 res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
                             elif app_mode == "API (Groq)":
-                                if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
+                                if img: st.warning("🖼️ Image uploads are not supported by Groq.")
                                 res_text = generate_groq_response(api_key, selected_model, history, check)
                             elif app_mode == "API (Cohere)":
-                                if img: st.warning("🖼️ Image uploads are not currently supported by Cohere in this app. Ignoring image.")
+                                if img: st.warning("🖼️ Image uploads are not supported by Cohere in this app.")
                                 res_text = generate_cohere_response(api_key, selected_model, history, check)
                             elif app_mode == "API (OpenRouter)":
-                                if img: st.warning("🖼️ Image uploads are not currently supported by OpenRouter in this app. Ignoring image.")
+                                if img: st.warning("🖼️ Image uploads are not supported by OpenRouter in this app.")
                                 res_text = generate_openrouter_response(api_key, selected_model, history, check)
+                            
+                            if res_text:
+                                # IMPORTANT: this response-level check is what actually catches
+                                # PII the model echoes back (e.g. an email address repeated in
+                                # its answer). Its status must be surfaced — previously it was
+                                # computed but discarded, which is why the UI could show "Safe"
+                                # even while the response was being redacted underneath.
+                                s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                                turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
+                                protected_final = s_reply
+                                if s_status == "redacted":
+                                    show_redacted_notice()
+                                    turn_notices.append("redacted_response")
+                                elif s_status == "error":
+                                    show_security_error_notice()
+                                    turn_notices.append("error_response")
+                                if debug_response:
+                                    st.caption("🔎 Response Check")
+                                    render_debug_box(turn_debug["response_check"])
+                                render_answer(protected_final)
+                            else:
+                                protected_final = "No response generated."
+                                st.error(protected_final)
                         except Exception as e:
-                            gen_error = e
+                            protected_final = f"⚠️ Error: {str(e)[:150]}"
+                            st.error(protected_final)
 
-                    if gen_error is not None:
-                        if "401" in str(gen_error): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
-                        else: st.error(f"⚠️ Error: {str(gen_error)[:200]}...")
-                    elif res_text:
-                        # Same fix as side-by-side: the response-level check's own
-                        # status (Safe/Redacted/Blocked) must be shown for itself,
-                        # not silently folded away — this is the check that catches
-                        # PII the model echoes back in its answer.
-                        s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
-                        turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
+            # RIGHT COLUMN: UNPROTECTED (Raw input)
+            with col_unprot:
+                st.markdown("#### ⚠️ Unprotected Mode")
+                with st.spinner("Generating raw output..."):
+                    try:
+                        if app_mode == "API (Gemini)":
+                            raw_res = generate_gemini_response(st.session_state.genai_client, selected_model, history, full_p, img)
+                        elif app_mode == "API (Groq)":
+                            raw_res = generate_groq_response(api_key, selected_model, history, full_p)
+                        elif app_mode == "API (Cohere)":
+                            raw_res = generate_cohere_response(api_key, selected_model, history, full_p)
+                        elif app_mode == "API (OpenRouter)":
+                            raw_res = generate_openrouter_response(api_key, selected_model, history, full_p)
+                        
+                        if raw_res:
+                            unprotected_final = raw_res
+                            render_answer(unprotected_final)
+                        else:
+                            unprotected_final = "No response generated."
+                            st.error(unprotected_final)
+                    except Exception as e:
+                        unprotected_final = f"⚠️ Error: {str(e)[:150]}"
+                        st.error(unprotected_final)
 
-                        # Answer bubble first — the response check only exists
-                        # because the answer already exists to check, so it
-                        # must render AFTER, not before (this matches the
-                        # history-replay loop below, which already had it right).
-                        with st.chat_message("assistant"):
-                            render_answer(s_reply)
+            # Append whole side-by-side snapshot into session memory
+            st.session_state.multi_messages[app_mode].append({
+                "role": "side_by_side",
+                "user_prompt": full_p,
+                "protected_response": protected_final,
+                "unprotected_response": unprotected_final,
+                "debug": turn_debug,
+                "notices": turn_notices
+            })
+            refresh_metrics()
 
-                        if s_status == "redacted":
-                            show_redacted_notice()
-                            turn_notices.append("redacted_response")
-                        elif s_status == "error":
-                            show_security_error_notice()
-                            turn_notices.append("error_response")
-                        if debug_response:
-                            st.caption("🔎 Response Check")
-                            render_debug_box(turn_debug["response_check"])
+        else:
+            # SINGLE STANDARD VIEW
+            st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
+            with st.chat_message("user"):
+                st.write(full_p)
+                if img: st.image(img, width=300)
 
-                        st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices})
-                    else:
-                        st.error("🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds.")
+            turn_debug = {"prompt_check": None, "response_check": None}
+            turn_notices = []
 
-                    refresh_metrics()
+            safe, check, dbg, status = check_security_api(full_p, "prompt")
+            turn_debug["prompt_check"] = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+            if status == "redacted":
+                show_redacted_notice()
+                turn_notices.append("redacted_prompt")
+            elif status == "error":
+                show_security_error_notice()
+                turn_notices.append("error_prompt")
+            # Shown right here, BEFORE the LLM is even called — this is when
+            # the prompt check actually happens. Previously this box only
+            # appeared after the model's answer was already on screen,
+            # which made it look like it came from checking the response.
+            if debug_prompt:
+                st.caption("🔎 Prompt Check")
+                render_debug_box(turn_debug["prompt_check"])
+            refresh_metrics()
+
+            if not safe:
+                m = CUSTOM_MESSAGES["blocked_prompt"]
+                st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m, "debug": turn_debug, "notices": turn_notices})
+                with st.chat_message("assistant"):
+                    render_answer(m)
+            else:
+                res_text, gen_error = None, None
+                with st.spinner("Thinking..."):
+                    try:
+                        if app_mode == "API (Gemini)":
+                            res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
+                        elif app_mode == "API (Groq)":
+                            if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
+                            res_text = generate_groq_response(api_key, selected_model, history, check)
+                        elif app_mode == "API (Cohere)":
+                            if img: st.warning("🖼️ Image uploads are not currently supported by Cohere in this app. Ignoring image.")
+                            res_text = generate_cohere_response(api_key, selected_model, history, check)
+                        elif app_mode == "API (OpenRouter)":
+                            if img: st.warning("🖼️ Image uploads are not currently supported by OpenRouter in this app. Ignoring image.")
+                            res_text = generate_openrouter_response(api_key, selected_model, history, check)
+                    except Exception as e:
+                        gen_error = e
+
+                if gen_error is not None:
+                    if "401" in str(gen_error): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
+                    else: st.error(f"⚠️ Error: {str(gen_error)[:200]}...")
+                elif res_text:
+                    # Same fix as side-by-side: the response-level check's own
+                    # status (Safe/Redacted/Blocked) must be shown for itself,
+                    # not silently folded away — this is the check that catches
+                    # PII the model echoes back in its answer.
+                    s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                    turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
+
+                    # Answer bubble first — the response check only exists
+                    # because the answer already exists to check, so it
+                    # must render AFTER, not before (this matches the
+                    # history-replay loop below, which already had it right).
+                    with st.chat_message("assistant"):
+                        render_answer(s_reply)
+
+                    if s_status == "redacted":
+                        show_redacted_notice()
+                        turn_notices.append("redacted_response")
+                    elif s_status == "error":
+                        show_security_error_notice()
+                        turn_notices.append("error_response")
+                    if debug_response:
+                        st.caption("🔎 Response Check")
+                        render_debug_box(turn_debug["response_check"])
+
+                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices})
+                else:
+                    st.error("🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds.")
+
+                refresh_metrics()
 
 st.sidebar.markdown('<div class="sidebar-footer">Made by Gastón Z and AI 🤖</div>', unsafe_allow_html=True)
