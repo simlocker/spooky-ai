@@ -88,3 +88,5 @@ spooky-ai/
 ---
 
 ## Contributors
+
+dawinci
