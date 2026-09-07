@@ -21,7 +21,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 
 - Docker and Docker Compose
 - A **Prompt Security** account with an App ID and Gateway URL (mandatory)
-- At least **one** LLM API key (Gemini Free Tier and Groq are both free)
+- At least **one** LLM API key (Gemini, Groq, Openrouter and Cohere are all FREE)
 
 ---
 
