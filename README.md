@@ -1,6 +1,6 @@
 # Spooky AI 👻
 
-A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers and two integration methods — direct API calls and AI Gateway (reverse proxy) — so you can compare protected vs. unprotected behavior side by side.
+A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers and lets you compare protected vs. unprotected behavior side by side.
 
 > **Prompt Security** provides real-time protection for AI applications: it detects and blocks prompt injection attacks, redacts sensitive data (PII, secrets), and enforces usage policies — all inline, before prompts reach the LLM and before responses reach the user.
 
@@ -8,10 +8,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 
 ## Features
 
-- 🔀 **Two integration methods**
-  - **API mode** — app calls the LLM directly; Prompt Security checks prompts/responses via its `/api/protect` endpoint
-  - **AI Gateway mode** — all traffic is routed through the Prompt Security reverse proxy, which intercepts and inspects requests inline
-- 🤖 **Six LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, OpenRouter, OpenAI, and Gemini via AI Gateway
+- 🤖 **Four LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, and OpenRouter
 - 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
 - 📎 **File uploads** — attach `.txt`, `.pdf`, or image files to your prompts
 - 💡 **Trigger prompts** — pre-built sample prompts organized by attack category (prompt injection, PII, jailbreaks, etc.)
@@ -55,7 +52,6 @@ Fill in your keys and Prompt Security credentials:
 | `GROQ_API_KEY` | ⬇️ one required | Groq key — [get one free](https://console.groq.com/keys) |
 | `COHERE_API_KEY` | optional | Cohere key — [free trial](https://dashboard.cohere.com/api-keys) |
 | `OPENROUTER_API_KEY` | optional | OpenRouter key — [free models available](https://openrouter.ai/keys) |
-| `OPENAI_API_KEY` | optional | OpenAI key (also required for AI Gateway OpenAI mode) |
 
 ### 3. Run with Docker
 
@@ -69,13 +65,9 @@ Navigate to **http://your-ip-address:8501** in your browser.
 
 ---
 
-## Integration Methods Explained
+## How Protection Works
 
-### API Mode
 The app calls the LLM provider directly. Before each call, the prompt is sent to the Prompt Security `/api/protect` endpoint — which either blocks it, redacts sensitive content, or passes it through clean. The LLM response goes through the same check before being shown to the user.
-
-### AI Gateway Mode (Reverse Proxy)
-All LLM traffic is routed through the Prompt Security Gateway (`PS_GATEWAY_URL/v1/`). The gateway inspects requests inline and forwards them to the provider using a `forward-domain` header. Currently supported providers via gateway: **OpenAI** and **Gemini**.
 
 ---
 
@@ -96,6 +88,3 @@ spooky-ai/
 ---
 
 ## Contributors
-
-- **dawinci**
-- **Gastón Z** — 2025
