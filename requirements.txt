@@ -4,3 +4,4 @@ google-genai
 requests
 pypdf
 Pillow
+openpyxl
