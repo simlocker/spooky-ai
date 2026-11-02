@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 from openai import OpenAI
+import httpx
 import requests
 import os
 import pypdf
@@ -11,6 +12,9 @@ import json
 import ssl
 import re
 import time
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from PIL import Image
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
@@ -66,6 +70,45 @@ header { background: none !important; border: none !important; }
     background-color: #262730 !important;
     color: white !important;
     border: 1px solid rgba(250, 250, 250, 0.1) !important;
+}
+
+/* Help (?) tooltip icons: the generic sidebar-button rule above turns them into
+   dark squares. Make them transparent and subtle instead. */
+[data-testid="stSidebar"] [data-testid="stTooltipIcon"],
+[data-testid="stSidebar"] [data-testid="stTooltipIcon"] button,
+[data-testid="stSidebar"] [data-testid="stTooltipHoverTarget"],
+[data-testid="stSidebar"] [data-testid="stTooltipHoverTarget"] button {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #D9C8E2 !important;
+}
+[data-testid="stSidebar"] [data-testid="stTooltipIcon"] svg,
+[data-testid="stSidebar"] [data-testid="stTooltipHoverTarget"] svg {
+    color: #D9C8E2 !important;
+    opacity: 0.75;
+}
+[data-testid="stSidebar"] [data-testid="stTooltipIcon"]:hover svg,
+[data-testid="stSidebar"] [data-testid="stTooltipHoverTarget"]:hover svg {
+    opacity: 1;
+}
+
+/* Password field show/hide (eye) button: same problem — it is a <button> inside
+   the text input, so it inherited the grey sidebar-button style. Blend it into
+   the input instead. */
+[data-testid="stSidebar"] [data-testid="stTextInput"] button,
+[data-testid="stSidebar"] [data-testid="stTextInputRootElement"] button {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #D9C8E2 !important;
+}
+[data-testid="stSidebar"] [data-testid="stTextInput"] button:hover,
+[data-testid="stSidebar"] [data-testid="stTextInputRootElement"] button:hover {
+    background: rgba(217, 200, 226, 0.12) !important;
+    color: #FFFFFF !important;
 }
 
 .sidebar-footer {
@@ -146,17 +189,64 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 # ==========================================================
 # --- GLOBALS & STATE ---
 # ==========================================================
+def get_env_bool(name, default=False):
+    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
 PS_APP_ID = os.getenv("PS_APP_ID")
 PS_GATEWAY_URL = os.getenv("PS_GATEWAY_URL")
+
 if not PS_APP_ID or not PS_GATEWAY_URL:
     st.error("🚨 Critical Error: PS_APP_ID or PS_GATEWAY_URL missing.")
     st.stop()
+
 PS_PROTECT_API = f"{PS_GATEWAY_URL.strip('/')}/api/protect"
 
 # Optional: pin a specific named Policy (Homegrown Apps > Policies > "Manage Policies")
 # instead of silently relying on whichever policy the console has marked as this
 # connector's "Default Homegrown App Policy". Leave blank to use the default.
 PS_POLICY_NAME = os.getenv("PS_POLICY_NAME", "").strip()
+
+# ----------------------------------------------------------
+# Custom (bring-your-own) OpenAI-compatible endpoint
+# ----------------------------------------------------------
+# ALLOW_CUSTOM_ENDPOINTS=false   -> hides the "Custom" provider entirely
+#                                   (recommended if this app is exposed to
+#                                   people you don't fully trust).
+# ALLOW_PRIVATE_ENDPOINTS=true   -> lets the Custom provider reach plain-http,
+#                                   localhost and private-network addresses
+#                                   (e.g. Ollama / LM Studio / an internal
+#                                   gateway). Leave it OFF on any shared
+#                                   deployment: the server makes the request,
+#                                   so this is an SSRF vector.
+ALLOW_CUSTOM_ENDPOINTS = get_env_bool("ALLOW_CUSTOM_ENDPOINTS", True)
+ALLOW_PRIVATE_ENDPOINTS = get_env_bool("ALLOW_PRIVATE_ENDPOINTS", False)
+
+# Fixed OpenAI-compatible providers. Groq, Cohere's Compatibility API and
+# OpenRouter all speak the OpenAI chat-completions protocol, so they share one
+# generator below. (Verify Cohere's base URL against their docs if it stops
+# working — compatibility-layer paths occasionally move.)
+PROVIDER_CONFIG = {
+    "API (Groq)": {
+        "label": "Groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "env_key": "GROQ_API_KEY",
+        "extra_headers": None,
+    },
+    "API (Cohere)": {
+        "label": "Cohere",
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "env_key": "COHERE_API_KEY",
+        "extra_headers": None,
+    },
+    # The extra headers are optional (OpenRouter uses them only for its public
+    # leaderboard attribution), but harmless to include.
+    "API (OpenRouter)": {
+        "label": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "env_key": "OPENROUTER_API_KEY",
+        "extra_headers": {"HTTP-Referer": "https://spooky-ai.local", "X-Title": "Spooky AI"},
+    },
+}
 
 # ==========================================================
 # --- CUSTOM USER-FACING SECURITY MESSAGES ---
@@ -198,10 +288,17 @@ def show_security_error_notice():
     if SHOW_CUSTOM_NOTICES:
         st.error(CUSTOM_MESSAGES["security_check_error"])
 
+ALL_MODES = ["API (Gemini)", "API (Groq)", "API (Cohere)", "API (OpenRouter)", "API (Custom)"]
+
 if "multi_messages" not in st.session_state:
-    st.session_state.multi_messages = {"API (Gemini)": [], "API (Groq)": [], "API (Cohere)": [], "API (OpenRouter)": []}
+    st.session_state.multi_messages = {m: [] for m in ALL_MODES}
 if "session_costs" not in st.session_state:
-    st.session_state.session_costs = {"API (Gemini)": 0.0, "API (Groq)": 0.0, "API (Cohere)": 0.0, "API (OpenRouter)": 0.0}
+    st.session_state.session_costs = {m: 0.0 for m in ALL_MODES}
+# Upgrade path: if a session started before "API (Custom)" existed, add it.
+for _m in ALL_MODES:
+    st.session_state.multi_messages.setdefault(_m, [])
+    st.session_state.session_costs.setdefault(_m, 0.0)
+
 if "security_stats" not in st.session_state:
     st.session_state.security_stats = {"blocks": 0, "redactions": 0}
 if "last_latency" not in st.session_state: st.session_state.last_latency = 0
@@ -212,6 +309,8 @@ if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
 if "last_processed_file" not in st.session_state: st.session_state.last_processed_file = None
 if "gemini_available_models" not in st.session_state: st.session_state.gemini_available_models = []
 if "selected_gemini_model" not in st.session_state: st.session_state.selected_gemini_model = None
+if "custom_cfg" not in st.session_state: st.session_state.custom_cfg = {}
+if "custom_url_check" not in st.session_state: st.session_state.custom_url_check = None
 
 # ==========================================================
 # --- HELPERS ---
@@ -228,6 +327,15 @@ def reset_chat():
 def set_prompt(text):
     st.session_state.input_text = text
     st.session_state.uploader_key += 1
+
+def safe_err(e, limit=200):
+    """Stringify an exception for display, scrubbing the custom API key if an
+    endpoint happens to echo it back in an error message."""
+    s = str(e)
+    key = (st.session_state.get("custom_cfg") or {}).get("api_key")
+    if key and len(key) >= 6:
+        s = s.replace(key, "***")
+    return s[:limit]
 
 def render_debug_box(info):
     if not info: return
@@ -248,13 +356,10 @@ def render_answer(text):
         st.markdown('<div class="llm-answer-marker"></div>', unsafe_allow_html=True)
         st.write(text)
 
-def get_env_bool(name, default=False):
-    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
-
 def get_chat_models(client):
     try:
         return sorted(set([m.name for m in client.models.list() if "gemini" in m.name.lower()]))
-    except:
+    except Exception:
         return ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
 def choose_gemini_model(available_models):
@@ -288,9 +393,13 @@ def normalize_pdf_text(text):
     return re.sub(r"[ \t]+", " ", text).strip()
 
 def is_valid_key(key):
+    """Reject empty keys and obvious .env placeholders (e.g. 'your_key_here').
+    Deliberately does NOT reject a key just because it happens to contain the
+    letters 'key' or 'here' — real random keys can contain those by chance."""
     if not key: return False
-    k_lower = key.lower()
-    if "your" in k_lower or "key" in k_lower or "here" in k_lower or len(key) < 10: return False
+    k = key.strip().lower()
+    if len(k) < 10: return False
+    if re.search(r"(your[_\- ]|[_\-]here|changeme|<.*>|xxxx)", k): return False
     return True
 
 def get_api_history(chat_history):
@@ -303,6 +412,62 @@ def get_api_history(chat_history):
         elif "role" in item and "content" in item:
             clean_history.append({"role": item["role"], "content": item["content"]})
     return clean_history
+
+# ----------------------------------------------------------
+# Custom endpoint URL validation (SSRF guard)
+# ----------------------------------------------------------
+def validate_custom_url(url):
+    """Returns (ok, error_message). The Streamlit SERVER makes the request to
+    whatever URL a user types, so by default we only allow https:// endpoints
+    that resolve to public IP addresses. Set ALLOW_PRIVATE_ENDPOINTS=true to
+    allow http:// / localhost / private ranges (local models, internal
+    gateways).
+
+    Known limitation: a hostname is resolved here and again by the HTTP
+    client, so a hostile DNS server could in theory change its answer between
+    the two (DNS rebinding). That's acceptable for a demo tool; for anything
+    stronger, put the app behind an egress proxy / network policy."""
+    url = (url or "").strip()
+    if not url:
+        return False, "Enter a Base URL."
+    try:
+        p = urlparse(url)
+        port = p.port
+    except ValueError:
+        return False, "That doesn't look like a valid URL."
+    if p.scheme not in ("https", "http"):
+        return False, "URL must start with https://"
+    if not p.hostname:
+        return False, "URL is missing a host name."
+    if p.username or p.password:
+        return False, "Don't put credentials in the URL — use the API key field."
+    if p.scheme == "http" and not ALLOW_PRIVATE_ENDPOINTS:
+        return False, "Only https:// endpoints are allowed (set ALLOW_PRIVATE_ENDPOINTS=true for local/http)."
+    port = port or (443 if p.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(p.hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False, f"Could not resolve host '{p.hostname}'."
+    if not ALLOW_PRIVATE_ENDPOINTS:
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0].split("%")[0])
+            if getattr(ip, "ipv4_mapped", None):
+                ip = ip.ipv4_mapped
+            if (not ip.is_global) or ip.is_multicast:
+                return False, ("That host resolves to a private/internal address, which is blocked "
+                               "(set ALLOW_PRIVATE_ENDPOINTS=true if this is intentional).")
+    return True, ""
+
+def check_custom_url_cached(url, ttl=60):
+    """validate_custom_url() does a DNS lookup; Streamlit reruns the script on
+    every interaction, so cache the verdict briefly per URL."""
+    cached = st.session_state.custom_url_check
+    now = time.time()
+    if cached and cached["url"] == url and now - cached["ts"] < ttl:
+        return cached["ok"], cached["err"]
+    ok, err = validate_custom_url(url)
+    st.session_state.custom_url_check = {"url": url, "ok": ok, "err": err, "ts": now}
+    return ok, err
 
 # When Prompt Security redacts sensitive data, the LLM sees placeholder
 # tokens like [REDACTED_EMAIL_ADDRESS_1] or [REDACTED_CREDIT_CARD_1] instead
@@ -326,17 +491,17 @@ REDACTION_SYSTEM_NOTE = (
     "(and are not being asked for) the original value it stands in for."
 )
 
-# Helper generator functions for LLM API calls
+# ----------------------------------------------------------
+# LLM call helpers
+# ----------------------------------------------------------
 def generate_gemini_response(genai_client, model_sel, chat_history, current_prompt, img_obj=None):
     contents = []
     for m in chat_history:
         role = "user" if m["role"] == "user" else "model"
         contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-    
     current_parts = [types.Part.from_text(text=current_prompt)]
     if img_obj: current_parts.append(img_obj)
     contents.append(types.Content(role="user", parts=current_parts))
-
     gen_config = types.GenerateContentConfig(system_instruction=REDACTION_SYSTEM_NOTE)
     for mname in get_runtime_gemini_candidates(model_sel, st.session_state.gemini_available_models):
         try:
@@ -347,52 +512,73 @@ def generate_gemini_response(genai_client, model_sel, chat_history, current_prom
             else: raise e
     return None
 
-def generate_groq_response(api_key_str, model_sel, chat_history, current_prompt):
-    groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key_str)
-    messages_payload = [{"role": "system", "content": REDACTION_SYSTEM_NOTE}]
+def generate_openai_compatible_response(base_url, api_key_str, model_sel, chat_history, current_prompt,
+                                        extra_headers=None, system_as_user=False, harden=False):
+    """One generator for every OpenAI-compatible provider (Groq, Cohere,
+    OpenRouter and the user-supplied Custom endpoint).
+
+    system_as_user: some endpoints reject a 'system' role message. When True,
+                    the redaction note is folded into the first user message.
+    harden:         used for user-supplied URLs — re-validates the URL right
+                    before the call and refuses to follow HTTP redirects
+                    (a redirect to an internal address would bypass the
+                    SSRF check)."""
+    client_kwargs = {"base_url": base_url, "api_key": api_key_str}
+    if extra_headers:
+        client_kwargs["default_headers"] = extra_headers
+    if harden:
+        ok, err = validate_custom_url(base_url)
+        if not ok:
+            raise ValueError(err)
+        client_kwargs["http_client"] = httpx.Client(follow_redirects=False, timeout=60.0)
+
+    messages_payload = []
+    if not system_as_user:
+        messages_payload.append({"role": "system", "content": REDACTION_SYSTEM_NOTE})
     messages_payload += [{"role": m["role"], "content": m["content"]} for m in chat_history]
     messages_payload.append({"role": "user", "content": current_prompt})
+    if system_as_user:
+        for msg in messages_payload:
+            if msg["role"] == "user":
+                msg["content"] = f"{REDACTION_SYSTEM_NOTE}\n\n---\n\n{msg['content']}"
+                break
 
-    chat_completion = groq_client.chat.completions.create(
-        messages=messages_payload,
-        model=model_sel
+    client = OpenAI(**client_kwargs)
+    try:
+        completion = client.chat.completions.create(messages=messages_payload, model=model_sel)
+    finally:
+        try: client.close()
+        except Exception: pass
+
+    # Non-compliant endpoints sometimes return HTTP 200 with a body that is not
+    # a chat completion (an HTML page, an error JSON...). Say so clearly.
+    if not hasattr(completion, "choices") or not completion.choices:
+        raise ValueError("The endpoint did not return a chat completion. Check the Base URL "
+                         "(it usually ends in /v1) and that it is OpenAI-compatible.")
+    return completion.choices[0].message.content
+
+def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True):
+    """Single dispatch point for every provider, so adding one means editing
+    PROVIDER_CONFIG (or the Custom branch) rather than three if/elif chains."""
+    if app_mode == "API (Gemini)":
+        return generate_gemini_response(st.session_state.genai_client, model_sel, history, prompt, img)
+
+    if img and warn_img:
+        label = app_mode.replace("API (", "").rstrip(")")
+        st.warning(f"🖼️ Image uploads are not currently supported by {label} in this app. Ignoring image.")
+
+    if app_mode == "API (Custom)":
+        cfg = st.session_state.custom_cfg
+        return generate_openai_compatible_response(
+            cfg["base_url"], cfg["api_key"], model_sel, history, prompt,
+            system_as_user=cfg.get("system_as_user", False), harden=True
+        )
+
+    cfg = PROVIDER_CONFIG[app_mode]
+    return generate_openai_compatible_response(
+        cfg["base_url"], os.getenv(cfg["env_key"]), model_sel, history, prompt,
+        extra_headers=cfg["extra_headers"]
     )
-    return chat_completion.choices[0].message.content
-
-# Cohere publishes an OpenAI-SDK-compatible endpoint (the "Compatibility API"),
-# so — like Groq above — this reuses the openai package instead of adding the
-# separate `cohere` dependency. Verify this base URL against Cohere's current
-# docs if it stops working; compatibility-layer paths occasionally move.
-def generate_cohere_response(api_key_str, model_sel, chat_history, current_prompt):
-    cohere_client = OpenAI(base_url="https://api.cohere.ai/compatibility/v1", api_key=api_key_str)
-    messages_payload = [{"role": "system", "content": REDACTION_SYSTEM_NOTE}]
-    messages_payload += [{"role": m["role"], "content": m["content"]} for m in chat_history]
-    messages_payload.append({"role": "user", "content": current_prompt})
-
-    chat_completion = cohere_client.chat.completions.create(
-        messages=messages_payload,
-        model=model_sel
-    )
-    return chat_completion.choices[0].message.content
-
-# OpenRouter's native API is OpenAI-SDK compatible too. The extra headers are
-# optional (OpenRouter uses them only for its public leaderboard attribution),
-# but harmless to include.
-def generate_openrouter_response(api_key_str, model_sel, chat_history, current_prompt):
-    openrouter_client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key_str,
-        default_headers={"HTTP-Referer": "https://spooky-ai.local", "X-Title": "Spooky AI"}
-    )
-    messages_payload = [{"role": "system", "content": REDACTION_SYSTEM_NOTE}]
-    messages_payload += [{"role": m["role"], "content": m["content"]} for m in chat_history]
-    messages_payload.append({"role": "user", "content": current_prompt})
-
-    chat_completion = openrouter_client.chat.completions.create(
-        messages=messages_payload,
-        model=model_sel
-    )
-    return chat_completion.choices[0].message.content
 
 # ==========================================================
 # --- SIDEBAR ---
@@ -400,10 +586,12 @@ def generate_openrouter_response(api_key_str, model_sel, chat_history, current_p
 with st.sidebar:
     st.header("App Settings")
     st.button("🗑️ Clear Current Chat", use_container_width=True, on_click=reset_chat)
+
     trigger_data = {}
     try:
         with open("triggers.txt", "r") as f: trigger_data = json.load(f)
-    except: trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
+    except Exception: trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
+
     with st.popover("💡 Triggers", use_container_width=True):
         col_t, col_r = st.columns([0.7, 0.3])
         col_t.markdown("### Sample Prompts")
@@ -423,17 +611,23 @@ with st.sidebar:
     st.markdown("### Protection Layer")
     ps_enabled = st.toggle("Enable Prompt Security", value=True)
     side_by_side = st.toggle("🔀 Side-by-side Comparison", value=False)
-
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
+
     st.divider()
 
-    # Provider Selection — API integration is now the only supported method
-    provider = st.selectbox("Provider:", ["Groq", "Gemini", "Cohere", "OpenRouter"], index=0)
+    # Provider Selection — API integration is the only supported method
+    provider_options = ["Groq", "Gemini", "Cohere", "OpenRouter"] + (["Custom"] if ALLOW_CUSTOM_ENDPOINTS else [])
+    provider = st.selectbox("Provider:", provider_options, index=0)
     app_mode = f"API ({provider})"
 
     if app_mode != st.session_state.current_integration:
         st.session_state.current_integration = app_mode
         st.rerun()
+
+    # Debug checkboxes are rendered once, after the provider-specific block
+    # below. Defaulting them here also avoids a NameError when a provider is
+    # misconfigured and its block never reaches the checkboxes.
+    debug_prompt, debug_response = False, False
 
     # Dynamic Model Selector based on explicitly derived app_mode — placed
     # immediately after the Provider dropdown above, since choosing a model
@@ -452,20 +646,9 @@ with st.sidebar:
                 "groq/compound",
                 "groq/compound-mini"
             ], index=0)
-        st.caption("Mode: API Integration")
-        dbg_col1, dbg_col2 = st.columns(2)
-        debug_prompt = dbg_col1.checkbox("🔎 Prompt Debug", value=False)
-        debug_response = dbg_col2.checkbox("🔎 Response Debug", value=False)
-        #st.info("💡 Groq is highly recommended for users hitting Gemini rate limits.")
 
     elif app_mode == "API (Gemini)":
         api_key = os.getenv("GEMINI_FREE_API_KEY")
-        # Default both to False up front — this also fixes a pre-existing gap
-        # where a Gemini auth failure ("Connection Error") left debug_mode
-        # completely undefined (only the invalid-key path set it), which
-        # would have raised a NameError as soon as the history loop below
-        # tried to check it.
-        debug_prompt, debug_response = False, False
         if not is_valid_key(api_key):
             st.error("🔑 GEMINI_FREE_API_KEY is missing or a placeholder.")
             selected_model = "Unavailable"
@@ -486,15 +669,9 @@ with st.sidebar:
                     selected_model = st.selectbox("Select Gemini Model", chat_m, index=chat_m.index(st.session_state.selected_gemini_model))
                     st.session_state.selected_gemini_model = selected_model
             except Exception as e:
-                st.error(f"⚠️ Google API Auth Failed. Check your key.")
+                st.error("⚠️ Google API Auth Failed. Check your key.")
                 selected_model = "Connection Error"
                 st.session_state.gemini_available_models = []
-
-        st.caption("Mode: API Integration")
-        if selected_model not in ["Unavailable", "Connection Error"]:
-            dbg_col1, dbg_col2 = st.columns(2)
-            debug_prompt = dbg_col1.checkbox("🔎 Prompt Debug", value=False)
-            debug_response = dbg_col2.checkbox("🔎 Response Debug", value=False)
 
     elif app_mode == "API (Cohere)":
         api_key = os.getenv("COHERE_API_KEY")
@@ -512,10 +689,6 @@ with st.sidebar:
                 "command-r-plus-08-2024",
                 "command-r-08-2024"
             ], index=0)
-        st.caption("Mode: API Integration")
-        dbg_col1, dbg_col2 = st.columns(2)
-        debug_prompt = dbg_col1.checkbox("🔎 Prompt Debug", value=False)
-        debug_response = dbg_col2.checkbox("🔎 Response Debug", value=False)
 
     elif app_mode == "API (OpenRouter)":
         api_key = os.getenv("OPENROUTER_API_KEY")
@@ -536,6 +709,46 @@ with st.sidebar:
                 selected_model = st.text_input("OpenRouter model slug", value="meta-llama/llama-3.1-8b-instruct:free")
             else:
                 selected_model = "openrouter/free"
+
+    elif app_mode == "API (Custom)":
+        # Bring-your-own OpenAI-compatible endpoint: any service exposing
+        # POST {base_url}/chat/completions (OpenAI, Azure OpenAI's /openai/v1,
+        # Together, Mistral, DeepSeek, Ollama, LM Studio, LiteLLM, vLLM, ...).
+        st.warning("⚠️ A custom endpoint receives your API key and every prompt "
+                   "(including the raw text on the Unprotected side). Use test data "
+                   "only, and only with services you trust.")
+        custom_url = st.text_input("Base URL", value=os.getenv("CUSTOM_BASE_URL", ""),
+                                   placeholder="https://api.example.com/v1", key="custom_base_url").strip()
+        custom_key_input = st.text_input("API key", type="password", key="custom_api_key_input",
+                                         help="Kept in this browser session only; never written to disk or logs. "
+                                              "Leave blank to use CUSTOM_API_KEY from .env, or for keyless local endpoints.").strip()
+        custom_model = st.text_input("Model name", value=os.getenv("CUSTOM_MODEL", ""),
+                                     placeholder="e.g. gpt-4o-mini", key="custom_model_name").strip()
+        custom_sys_as_user = st.checkbox("Endpoint rejects 'system' messages", value=False, key="custom_sys_as_user",
+                                         help="Sends the redaction note inside the first user message instead.")
+
+        url_ok, url_err = (False, "")
+        if custom_url:
+            url_ok, url_err = check_custom_url_cached(custom_url)
+            if not url_ok:
+                st.error(f"🔗 {url_err}")
+
+        effective_key = custom_key_input or os.getenv("CUSTOM_API_KEY", "").strip()
+        if custom_url and url_ok and not effective_key:
+            st.caption("No API key provided — sending a placeholder (fine for local/keyless endpoints).")
+
+        if custom_url and url_ok and custom_model:
+            selected_model = custom_model
+            st.session_state.custom_cfg = {
+                "base_url": custom_url,
+                "api_key": effective_key or "not-needed",
+                "system_as_user": custom_sys_as_user,
+            }
+        else:
+            selected_model = "Unavailable"
+            st.session_state.custom_cfg = {}
+
+    if selected_model not in ["Unavailable", "Connection Error"]:
         st.caption("Mode: API Integration")
         dbg_col1, dbg_col2 = st.columns(2)
         debug_prompt = dbg_col1.checkbox("🔎 Prompt Debug", value=False)
@@ -550,6 +763,7 @@ def refresh_metrics():
             c1.metric("Blocks", st.session_state.security_stats["blocks"])
             c2.metric("Redactions", st.session_state.security_stats["redactions"])
             st.caption(f"⚡ Latency: {st.session_state.last_latency} ms | 🚫 Violation: {st.session_state.last_violation}")
+
 refresh_metrics()
 
 # ==========================================================
@@ -563,22 +777,28 @@ with st.container():
         disp_id = f"{PS_APP_ID[:16]}..."
         c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
         policy_disp = PS_POLICY_NAME if PS_POLICY_NAME else "(connector default)"
-        st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}** | Policy: **{policy_disp}**")
+        endpoint_disp = ""
+        if app_mode == "API (Custom)" and st.session_state.custom_cfg:
+            endpoint_disp = f" | Endpoint: **{urlparse(st.session_state.custom_cfg['base_url']).hostname}**"
+        st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**{endpoint_disp}\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}** | Policy: **{policy_disp}**")
     with col_u:
         st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
         with st.popover("➕ Upload"):
             uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg", "xlsx"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
         st.markdown('</div>', unsafe_allow_html=True)
-
-if uploaded_file:
-    st.caption(f"📎 Archivo adjunto y listo: **{uploaded_file.name}** — escribí tu mensaje abajo y presioná Enter para enviarlo junto con el archivo.")
+        if uploaded_file:
+            st.caption(f"📎 Archivo adjunto y listo: **{uploaded_file.name}** — escribí tu mensaje abajo y presioná Enter para enviarlo junto con el archivo.")
 
 if selected_model in ["Unavailable", "Connection Error"]:
-    st.warning(f"⚠️ **{app_mode} is not properly configured.**\n\nPlease add a valid API key to your `.env` file and restart Docker, or select a different integration.")
+    if app_mode == "API (Custom)":
+        st.warning("⚠️ **Custom endpoint is not configured.**\n\nEnter a valid Base URL (https://…/v1) and a Model name in the sidebar.")
+    else:
+        st.warning(f"⚠️ **{app_mode} is not properly configured.**\n\nPlease add a valid API key to your `.env` file and restart Docker, or select a different integration.")
 
 # SECURITY LOGIC
 def check_security_api(text, context_type="prompt", max_retries=2):
     if not ps_enabled: return True, text, {"status": "Bypassed"}, "safe"
+
     headers = {"Content-Type": "application/json", "APP-ID": PS_APP_ID}
     payload = {context_type: text, "user": user_email}
     if PS_POLICY_NAME:
@@ -597,7 +817,6 @@ def check_security_api(text, context_type="prompt", max_retries=2):
     for attempt in range(max_retries + 1):
         try:
             response = http_session.post(PS_PROTECT_API, json=payload, headers=headers, timeout=15)
-
             try:
                 data = response.json()
             except ValueError:
@@ -621,19 +840,23 @@ def check_security_api(text, context_type="prompt", max_retries=2):
                 return True, text, data, "error"
 
             res_b = data.get("result", {})
+
             # NOTE: totalLatency lives inside `result`, not at the top level of the response
             # (per Prompt Security API docs: "Understanding the Structure and Fields of the API Response").
             st.session_state.last_latency = res_b.get("totalLatency") or res_b.get("latency", 0)
             cont_b = res_b.get(context_type, {})
             v_list = cont_b.get("violations", [])
             st.session_state.last_violation = " + ".join(v_list) if v_list else ("None" if context_type == "prompt" else st.session_state.last_violation)
+
             findings = cont_b.get("findings", {})
             redacts = len(findings.get("Sensitive Data", [])) + len(findings.get("Secrets", [])) + len(findings.get("Regex", []))
+
             # NOTE: documented /api/protect status codes are 200/400/401/429/500 — there is no 403.
             # The block signal is the `action` field, not the HTTP status.
             if res_b.get("action") == "block":
                 st.session_state.security_stats["blocks"] += 1; st.toast("Security Block!", icon="🚨")
                 return False, "Blocked", data, "blocked"
+
             redacted = cont_b.get("modified_text") or text
             if redacts > 0:
                 st.session_state.security_stats["redactions"] += redacts; st.toast(f"{redacts} items redacted!", icon="⚠️")
@@ -704,6 +927,7 @@ for i, m in enumerate(messages_list):
         if m["role"] == "assistant":
             dbg = m.get("debug") or {}
             notices = m.get("notices") or []
+
             # Everything below is deliberately OUTSIDE any st.chat_message()
             # block. st.chat_message() wraps its entire contents in one
             # bordered card (see CSS rule 5), so anything written inside it
@@ -745,10 +969,10 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
             try:
                 raw_pdf_text = "".join([p.extract_text() or "" for p in pypdf.PdfReader(uploaded_file).pages])
                 ctx = f"\n\n[PDF: {uploaded_file.name}]\n" + normalize_pdf_text(raw_pdf_text)
-            except: ctx = "\n[PDF Error]"
+            except Exception: ctx = "\n[PDF Error]"
         elif "image" in t:
             try: img = Image.open(uploaded_file); ctx = f"\n\n[Image: {uploaded_file.name}]"
-            except: pass
+            except Exception: pass
         elif "spreadsheet" in t or "excel" in t:
             try:
                 wb = openpyxl.load_workbook(uploaded_file, data_only=True)
@@ -762,11 +986,13 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 ctx = f"\n\n[XLSX: {uploaded_file.name}]\n" + "\n\n".join(sheet_texts)
             except Exception as e:
                 ctx = f"\n[XLSX Error: {e}]"
+
         # The file has been consumed for this message — reset the uploader
         # widget so it doesn't silently get re-attached to the next message.
         st.session_state.uploader_key += 1
 
     full_p = f"{prompt if prompt else ''} {ctx}".strip()
+
     if full_p or img:
         # --- API METHOD ---
         history = get_api_history(st.session_state.multi_messages[app_mode])
@@ -787,12 +1013,14 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 st.markdown("#### 🛡️ Protected Mode")
                 safe, check, dbg, status = check_security_api(full_p, "prompt")
                 turn_debug["prompt_check"] = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+
                 if status == "redacted":
                     show_redacted_notice()
                     turn_notices.append("redacted_prompt")
                 elif status == "error":
                     show_security_error_notice()
                     turn_notices.append("error_prompt")
+
                 if debug_prompt:
                     st.caption("🔎 Prompt Check")
                     render_debug_box(turn_debug["prompt_check"])
@@ -803,18 +1031,8 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 else:
                     with st.spinner("Generating protected output..."):
                         try:
-                            if app_mode == "API (Gemini)":
-                                res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
-                            elif app_mode == "API (Groq)":
-                                if img: st.warning("🖼️ Image uploads are not supported by Groq.")
-                                res_text = generate_groq_response(api_key, selected_model, history, check)
-                            elif app_mode == "API (Cohere)":
-                                if img: st.warning("🖼️ Image uploads are not supported by Cohere in this app.")
-                                res_text = generate_cohere_response(api_key, selected_model, history, check)
-                            elif app_mode == "API (OpenRouter)":
-                                if img: st.warning("🖼️ Image uploads are not supported by OpenRouter in this app.")
-                                res_text = generate_openrouter_response(api_key, selected_model, history, check)
-                            
+                            res_text = call_llm(app_mode, selected_model, history, check, img)
+
                             if res_text:
                                 # IMPORTANT: this response-level check is what actually catches
                                 # PII the model echoes back (e.g. an email address repeated in
@@ -824,21 +1042,24 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                                 s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
                                 turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
                                 protected_final = s_reply
+
                                 if s_status == "redacted":
                                     show_redacted_notice()
                                     turn_notices.append("redacted_response")
                                 elif s_status == "error":
                                     show_security_error_notice()
                                     turn_notices.append("error_response")
+
                                 if debug_response:
                                     st.caption("🔎 Response Check")
                                     render_debug_box(turn_debug["response_check"])
+
                                 render_answer(protected_final)
                             else:
                                 protected_final = "No response generated."
                                 st.error(protected_final)
                         except Exception as e:
-                            protected_final = f"⚠️ Error: {str(e)[:150]}"
+                            protected_final = f"⚠️ Error: {safe_err(e, 150)}"
                             st.error(protected_final)
 
             # RIGHT COLUMN: UNPROTECTED (Raw input)
@@ -846,15 +1067,8 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 st.markdown("#### ⚠️ Unprotected Mode")
                 with st.spinner("Generating raw output..."):
                     try:
-                        if app_mode == "API (Gemini)":
-                            raw_res = generate_gemini_response(st.session_state.genai_client, selected_model, history, full_p, img)
-                        elif app_mode == "API (Groq)":
-                            raw_res = generate_groq_response(api_key, selected_model, history, full_p)
-                        elif app_mode == "API (Cohere)":
-                            raw_res = generate_cohere_response(api_key, selected_model, history, full_p)
-                        elif app_mode == "API (OpenRouter)":
-                            raw_res = generate_openrouter_response(api_key, selected_model, history, full_p)
-                        
+                        raw_res = call_llm(app_mode, selected_model, history, full_p, img, warn_img=False)
+
                         if raw_res:
                             unprotected_final = raw_res
                             render_answer(unprotected_final)
@@ -862,7 +1076,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                             unprotected_final = "No response generated."
                             st.error(unprotected_final)
                     except Exception as e:
-                        unprotected_final = f"⚠️ Error: {str(e)[:150]}"
+                        unprotected_final = f"⚠️ Error: {safe_err(e, 150)}"
                         st.error(unprotected_final)
 
             # Append whole side-by-side snapshot into session memory
@@ -888,12 +1102,14 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
 
             safe, check, dbg, status = check_security_api(full_p, "prompt")
             turn_debug["prompt_check"] = {"checked_p": check, "original_p": full_p, "debug": dbg, "status_type": status}
+
             if status == "redacted":
                 show_redacted_notice()
                 turn_notices.append("redacted_prompt")
             elif status == "error":
                 show_security_error_notice()
                 turn_notices.append("error_prompt")
+
             # Shown right here, BEFORE the LLM is even called — this is when
             # the prompt check actually happens. Previously this box only
             # appeared after the model's answer was already on screen,
@@ -901,6 +1117,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
             if debug_prompt:
                 st.caption("🔎 Prompt Check")
                 render_debug_box(turn_debug["prompt_check"])
+
             refresh_metrics()
 
             if not safe:
@@ -912,23 +1129,13 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 res_text, gen_error = None, None
                 with st.spinner("Thinking..."):
                     try:
-                        if app_mode == "API (Gemini)":
-                            res_text = generate_gemini_response(st.session_state.genai_client, selected_model, history, check, img)
-                        elif app_mode == "API (Groq)":
-                            if img: st.warning("🖼️ Image uploads are not currently supported by Groq text models. Ignoring image.")
-                            res_text = generate_groq_response(api_key, selected_model, history, check)
-                        elif app_mode == "API (Cohere)":
-                            if img: st.warning("🖼️ Image uploads are not currently supported by Cohere in this app. Ignoring image.")
-                            res_text = generate_cohere_response(api_key, selected_model, history, check)
-                        elif app_mode == "API (OpenRouter)":
-                            if img: st.warning("🖼️ Image uploads are not currently supported by OpenRouter in this app. Ignoring image.")
-                            res_text = generate_openrouter_response(api_key, selected_model, history, check)
+                        res_text = call_llm(app_mode, selected_model, history, check, img)
                     except Exception as e:
                         gen_error = e
 
                 if gen_error is not None:
                     if "401" in str(gen_error): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
-                    else: st.error(f"⚠️ Error: {str(gen_error)[:200]}...")
+                    else: st.error(f"⚠️ Error: {safe_err(gen_error, 200)}...")
                 elif res_text:
                     # Same fix as side-by-side: the response-level check's own
                     # status (Safe/Redacted/Blocked) must be shown for itself,
@@ -950,6 +1157,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                     elif s_status == "error":
                         show_security_error_notice()
                         turn_notices.append("error_response")
+
                     if debug_response:
                         st.caption("🔎 Response Check")
                         render_debug_box(turn_debug["response_check"])
@@ -958,6 +1166,6 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                 else:
                     st.error("🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds.")
 
-                refresh_metrics()
+            refresh_metrics()
 
 st.sidebar.markdown('<div class="sidebar-footer">Made by Gastón Z and AI 🤖</div>', unsafe_allow_html=True)
