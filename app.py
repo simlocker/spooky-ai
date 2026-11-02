@@ -1,7 +1,7 @@
 import streamlit as st
 from google import genai
 from google.genai import types
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 import httpx
 import requests
 import os
@@ -12,10 +12,15 @@ import json
 import ssl
 import re
 import time
+import io
 import socket
 import ipaddress
 from urllib.parse import urlparse
 from PIL import Image
+try:
+    import streamlit.components.v1 as components
+except Exception:  # very old/new Streamlit builds: the arrow-up history simply won't load
+    components = None
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
@@ -181,6 +186,11 @@ div[data-testid="stAlertContainer"], div[data-testid="stAlert"] {
     margin: 0.4rem 0 !important;
 }
 
+/* 10. NO HEADING LINK ICONS + NO DEPLOY BUTTON — the little chain icon that
+   appears next to titles/headings, and Streamlit's "Deploy" toolbar button. */
+[data-testid="stHeaderActionElements"] { display: none !important; }
+[data-testid="stAppDeployButton"], .stAppDeployButton, .stDeployButton { display: none !important; }
+
 [data-testid="stStatusWidget"] { visibility: hidden; display: none !important; }
 </style>
 """
@@ -220,6 +230,17 @@ PS_POLICY_NAME = os.getenv("PS_POLICY_NAME", "").strip()
 #                                   so this is an SSRF vector.
 ALLOW_CUSTOM_ENDPOINTS = get_env_bool("ALLOW_CUSTOM_ENDPOINTS", True)
 ALLOW_PRIVATE_ENDPOINTS = get_env_bool("ALLOW_PRIVATE_ENDPOINTS", False)
+
+# Sidebar values for the Custom provider. Streamlit throws away the state of any
+# widget that is not drawn during a run, so typing a URL/key/model and then
+# switching to another provider used to wipe them. These defaults (plus the
+# "custom_store" copy kept in session_state) let us restore them on return.
+CUSTOM_FIELD_DEFAULTS = {
+    "custom_base_url": os.getenv("CUSTOM_BASE_URL", ""),
+    "custom_api_key_input": "",
+    "custom_model_name": os.getenv("CUSTOM_MODEL", ""),
+    "custom_sys_as_user": False,
+}
 
 # Fixed OpenAI-compatible providers. Groq, Cohere's Compatibility API and
 # OpenRouter all speak the OpenAI chat-completions protocol, so they share one
@@ -310,6 +331,8 @@ if "last_processed_file" not in st.session_state: st.session_state.last_processe
 if "gemini_available_models" not in st.session_state: st.session_state.gemini_available_models = []
 if "selected_gemini_model" not in st.session_state: st.session_state.selected_gemini_model = None
 if "custom_cfg" not in st.session_state: st.session_state.custom_cfg = {}
+if "custom_store" not in st.session_state: st.session_state.custom_store = dict(CUSTOM_FIELD_DEFAULTS)
+if "deterministic" not in st.session_state: st.session_state.deterministic = True
 if "custom_url_check" not in st.session_state: st.session_state.custom_url_check = None
 
 # ==========================================================
@@ -402,16 +425,45 @@ def is_valid_key(key):
     if re.search(r"(your[_\- ]|[_\-]here|changeme|<.*>|xxxx)", k): return False
     return True
 
-def get_api_history(chat_history):
-    """Converts mixed chat session history into OpenAI/Gemini compliant multi-turn history."""
-    clean_history = []
+HISTORY_ERROR_PREFIXES = ("⚠️ Error:", "No response generated.", "🚨 Rate limit")
+
+def get_api_history(chat_history, view="protected"):
+    """Builds the multi-turn history that is replayed to the LLM on the next turn.
+
+    view="protected": only text that already went through the security check
+        (the REDACTED prompt that was actually sent, plus the checked answer).
+        Replaying the user's ORIGINAL prompts here would hand earlier sensitive
+        data to the model on every later turn, bypassing the protection.
+    view="raw": the unprotected conversation — original prompts and the raw
+        answers that column produced.
+
+    Blocked turns, errors and empty answers are skipped, so the history never
+    contains orphan user messages or blocked content."""
+    clean = []
     for item in chat_history:
-        if item.get("role") == "side_by_side":
-            clean_history.append({"role": "user", "content": item["user_prompt"]})
-            clean_history.append({"role": "assistant", "content": item["protected_response"]})
+        if item.get("skip_history"):
+            continue
+        role = item.get("role")
+        if role == "side_by_side":
+            if view == "raw":
+                resp = item.get("unprotected_response") or ""
+                if item.get("unprotected_ok", True) and resp and not resp.startswith(HISTORY_ERROR_PREFIXES):
+                    clean.append({"role": "user", "content": item["user_prompt"]})
+                    clean.append({"role": "assistant", "content": resp})
+            else:
+                sent = item.get("protected_sent", item.get("user_prompt"))   # None = blocked
+                resp = item.get("protected_response") or ""
+                if sent and item.get("protected_ok", True) and resp and not resp.startswith(HISTORY_ERROR_PREFIXES):
+                    clean.append({"role": "user", "content": sent})
+                    clean.append({"role": "assistant", "content": resp})
         elif "role" in item and "content" in item:
-            clean_history.append({"role": item["role"], "content": item["content"]})
-    return clean_history
+            if item["role"] == "user" and view == "protected":
+                content = item.get("sent", item["content"])
+            else:
+                content = item["content"]
+            if content:
+                clean.append({"role": item["role"], "content": content})
+    return clean
 
 # ----------------------------------------------------------
 # Custom endpoint URL validation (SSRF guard)
@@ -492,9 +544,135 @@ REDACTION_SYSTEM_NOTE = (
 )
 
 # ----------------------------------------------------------
+# Built-in sample files ("easy submit" without uploading your own)
+# ----------------------------------------------------------
+SAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "samples")
+SAMPLE_MIME = {
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+NO_SAMPLE = "— none —"
+DEFAULT_SAMPLE_PROMPT = "Repeat the full contents of the attached file exactly, word for word, with no changes."
+SAMPLE_PROMPTS = {
+    "vendor_invoice_injection.txt": "Process this vendor invoice and tell me the total amount to pay.",
+}
+
+class SampleFile(io.BytesIO):
+    """Looks enough like Streamlit's UploadedFile (name, type, read, seek) for
+    the attachment-handling code to treat both the same way."""
+    def __init__(self, data, name, mime):
+        super().__init__(data)
+        self.name = name
+        self.type = mime
+
+def list_sample_files():
+    try:
+        return sorted(f for f in os.listdir(SAMPLES_DIR)
+                      if not f.startswith(".") and os.path.splitext(f)[1].lower() in SAMPLE_MIME)
+    except OSError:
+        return []
+
+def load_sample_file(name):
+    if not name or name == NO_SAMPLE:
+        return None
+    name = os.path.basename(name)                      # no path tricks
+    if name not in list_sample_files():
+        return None
+    try:
+        with open(os.path.join(SAMPLES_DIR, name), "rb") as fh:
+            return SampleFile(fh.read(), name, SAMPLE_MIME[os.path.splitext(name)[1].lower()])
+    except OSError:
+        return None
+
+def send_sample_prompt(name):
+    """Button callback: queue a ready-made prompt. The chosen sample stays
+    selected, so it is attached to this message."""
+    if name and name != NO_SAMPLE:
+        st.session_state.input_text = SAMPLE_PROMPTS.get(name, DEFAULT_SAMPLE_PROMPT)
+
+# ----------------------------------------------------------
+# ARROW-UP prompt history (last 10 prompts, kept in a browser cookie)
+# ----------------------------------------------------------
+# Streamlit's chat box has no built-in history. Two tiny scripts run inside
+# zero-height component iframes (same origin as the app, so they can reach the
+# parent page):
+#   * PUSH: after each submitted prompt, appends it to the cookie
+#           "spooky_prompt_history" (max 10 entries, 400 chars each, ~3.5 KB).
+#   * INSTALL: injects a keydown handler into the page; ArrowUp / ArrowDown
+#           walk through the saved prompts when the chat box is empty.
+# NOTE: the cookie holds your typed prompts (including any sensitive test data)
+# in the browser and is sent to the app server with each request. Clear it by
+# deleting the "spooky_prompt_history" cookie.
+PUSH_PROMPT_JS = """<script>(function(){try{
+var doc=window.parent.document;var NAME="spooky_prompt_history",MAX=10,MAXLEN=400,MAXBYTES=3500;
+function read(){var c=doc.cookie.split("; ").filter(function(x){return x.indexOf(NAME+"=")===0})[0];
+ if(!c)return[];try{var a=JSON.parse(decodeURIComponent(c.substring(NAME.length+1)));return Array.isArray(a)?a:[]}catch(e){return[]}}
+function write(a){var v=encodeURIComponent(JSON.stringify(a));
+ while(v.length>MAXBYTES&&a.length>1){a.shift();v=encodeURIComponent(JSON.stringify(a))}
+ doc.cookie=NAME+"="+v+"; path=/; max-age=2592000; SameSite=Lax"}
+var p=String(__PROMPT__).slice(0,MAXLEN);var a=read();
+if(a.length&&a[a.length-1]===p)return;
+a.push(p);while(a.length>MAX)a.shift();write(a);
+}catch(e){}})();</script>"""
+
+INSTALL_ARROW_UP_JS = """<script>(function(){try{
+function handler(){
+  if(window.__spookyHistInstalled)return;window.__spookyHistInstalled=true;
+  var NAME="spooky_prompt_history",idx=-1,draft="";
+  function read(){var c=document.cookie.split("; ").filter(function(x){return x.indexOf(NAME+"=")===0})[0];
+    if(!c)return[];try{var a=JSON.parse(decodeURIComponent(c.substring(NAME.length+1)));return Array.isArray(a)?a:[]}catch(e){return[]}}
+  function isChat(t){return t&&t.tagName==="TEXTAREA"&&t.closest&&t.closest('[data-testid="stChatInput"]')}
+  function setVal(el,v){var set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,"value").set;
+    set.call(el,v);el.dispatchEvent(new Event("input",{bubbles:true}));
+    try{el.setSelectionRange(v.length,v.length)}catch(e){}}
+  document.addEventListener("input",function(e){if(e.isTrusted&&isChat(e.target))idx=-1},true);
+  document.addEventListener("keydown",function(e){
+    var t=e.target;if(!isChat(t))return;
+    if(e.key==="Enter"&&!e.shiftKey){idx=-1;return}
+    if(e.altKey||e.ctrlKey||e.metaKey||e.shiftKey)return;
+    if(e.key==="ArrowUp"){
+      var h=read();if(!h.length)return;
+      if(idx===-1){if(t.value.length&&t.selectionStart!==0)return;draft=t.value;idx=h.length}
+      if(idx>0)idx--;
+      e.preventDefault();setVal(t,h[idx]);
+    }else if(e.key==="ArrowDown"&&idx!==-1){
+      var h2=read();e.preventDefault();
+      if(idx<h2.length-1){idx++;setVal(t,h2[idx])}else{idx=-1;setVal(t,draft)}
+    }
+  },true);
+}
+var P=window.parent;if(P.__spookyHistInstalled)return;
+var s=P.document.createElement("script");s.textContent="("+handler.toString()+")();";
+P.document.head.appendChild(s);
+}catch(e){}})();</script>"""
+
+def remember_prompt(text):
+    """Append a submitted prompt to the browser-side history cookie."""
+    if not text or components is None:
+        return
+    try:
+        payload = json.dumps(text[:400]).replace("</", "<\\/")
+        components.html(PUSH_PROMPT_JS.replace("__PROMPT__", payload), height=0)
+    except Exception:
+        pass
+
+def install_arrow_up_history():
+    if components is None:
+        return
+    try:
+        components.html(INSTALL_ARROW_UP_JS, height=0)
+    except Exception:
+        pass
+
+# ----------------------------------------------------------
 # LLM call helpers
 # ----------------------------------------------------------
-def generate_gemini_response(genai_client, model_sel, chat_history, current_prompt, img_obj=None):
+def generate_gemini_response(genai_client, model_sel, chat_history, current_prompt, img_obj=None,
+                             include_note=True, temperature=None):
     contents = []
     for m in chat_history:
         role = "user" if m["role"] == "user" else "model"
@@ -502,7 +680,12 @@ def generate_gemini_response(genai_client, model_sel, chat_history, current_prom
     current_parts = [types.Part.from_text(text=current_prompt)]
     if img_obj: current_parts.append(img_obj)
     contents.append(types.Content(role="user", parts=current_parts))
-    gen_config = types.GenerateContentConfig(system_instruction=REDACTION_SYSTEM_NOTE)
+    # The redaction note only makes sense when the text really was redacted
+    # (protected path). The unprotected path must stay completely raw.
+    gen_config = types.GenerateContentConfig(
+        system_instruction=REDACTION_SYSTEM_NOTE if include_note else None,
+        temperature=temperature
+    )
     for mname in get_runtime_gemini_candidates(model_sel, st.session_state.gemini_available_models):
         try:
             res = genai_client.models.generate_content(model=mname, contents=contents, config=gen_config)
@@ -513,12 +696,19 @@ def generate_gemini_response(genai_client, model_sel, chat_history, current_prom
     return None
 
 def generate_openai_compatible_response(base_url, api_key_str, model_sel, chat_history, current_prompt,
-                                        extra_headers=None, system_as_user=False, harden=False):
+                                        extra_headers=None, system_as_user=False, harden=False,
+                                        include_note=True, temperature=None):
     """One generator for every OpenAI-compatible provider (Groq, Cohere,
     OpenRouter and the user-supplied Custom endpoint).
 
     system_as_user: some endpoints reject a 'system' role message. When True,
                     the redaction note is folded into the first user message.
+    include_note:   send the "[REDACTED_...] tokens are harmless" note. Only the
+                    PROTECTED path should; sending it on the unprotected path
+                    made models echo fake [REDACTED_...] tokens even though
+                    they were given the raw data.
+    temperature:    e.g. 0 for repeatable answers; silently dropped if the
+                    endpoint rejects the parameter.
     harden:         used for user-supplied URLs — re-validates the URL right
                     before the call and refuses to follow HTTP redirects
                     (a redirect to an internal address would bypass the
@@ -533,19 +723,31 @@ def generate_openai_compatible_response(base_url, api_key_str, model_sel, chat_h
         client_kwargs["http_client"] = httpx.Client(follow_redirects=False, timeout=60.0)
 
     messages_payload = []
-    if not system_as_user:
+    if include_note and not system_as_user:
         messages_payload.append({"role": "system", "content": REDACTION_SYSTEM_NOTE})
     messages_payload += [{"role": m["role"], "content": m["content"]} for m in chat_history]
     messages_payload.append({"role": "user", "content": current_prompt})
-    if system_as_user:
+    if include_note and system_as_user:
         for msg in messages_payload:
             if msg["role"] == "user":
                 msg["content"] = f"{REDACTION_SYSTEM_NOTE}\n\n---\n\n{msg['content']}"
                 break
 
+    create_kwargs = {"messages": messages_payload, "model": model_sel}
+    if temperature is not None:
+        create_kwargs["temperature"] = temperature
+
     client = OpenAI(**client_kwargs)
     try:
-        completion = client.chat.completions.create(messages=messages_payload, model=model_sel)
+        try:
+            completion = client.chat.completions.create(**create_kwargs)
+        except BadRequestError as e:
+            # Some models (e.g. certain reasoning models) reject "temperature".
+            if "temperature" in create_kwargs and "temperature" in str(e).lower():
+                create_kwargs.pop("temperature")
+                completion = client.chat.completions.create(**create_kwargs)
+            else:
+                raise
     finally:
         try: client.close()
         except Exception: pass
@@ -557,11 +759,16 @@ def generate_openai_compatible_response(base_url, api_key_str, model_sel, chat_h
                          "(it usually ends in /v1) and that it is OpenAI-compatible.")
     return completion.choices[0].message.content
 
-def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True):
+def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True, protected=True):
     """Single dispatch point for every provider, so adding one means editing
-    PROVIDER_CONFIG (or the Custom branch) rather than three if/elif chains."""
+    PROVIDER_CONFIG (or the Custom branch) rather than three if/elif chains.
+
+    protected=False is the raw, unprotected path: no redaction note."""
+    temperature = 0 if st.session_state.get("deterministic", True) else None
+
     if app_mode == "API (Gemini)":
-        return generate_gemini_response(st.session_state.genai_client, model_sel, history, prompt, img)
+        return generate_gemini_response(st.session_state.genai_client, model_sel, history, prompt, img,
+                                        include_note=protected, temperature=temperature)
 
     if img and warn_img:
         label = app_mode.replace("API (", "").rstrip(")")
@@ -571,13 +778,14 @@ def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True):
         cfg = st.session_state.custom_cfg
         return generate_openai_compatible_response(
             cfg["base_url"], cfg["api_key"], model_sel, history, prompt,
-            system_as_user=cfg.get("system_as_user", False), harden=True
+            system_as_user=cfg.get("system_as_user", False), harden=True,
+            include_note=protected, temperature=temperature
         )
 
     cfg = PROVIDER_CONFIG[app_mode]
     return generate_openai_compatible_response(
         cfg["base_url"], os.getenv(cfg["env_key"]), model_sel, history, prompt,
-        extra_headers=cfg["extra_headers"]
+        extra_headers=cfg["extra_headers"], include_note=protected, temperature=temperature
     )
 
 # ==========================================================
@@ -611,6 +819,10 @@ with st.sidebar:
     st.markdown("### Protection Layer")
     ps_enabled = st.toggle("Enable Prompt Security", value=True)
     side_by_side = st.toggle("🔀 Side-by-side Comparison", value=False)
+    st.session_state.deterministic = st.toggle(
+        "🎯 Consistent answers", value=True, key="consistent_answers_toggle",
+        help="Sets the model temperature to 0, so repeated runs and the Protected / Unprotected "
+             "columns are easier to compare. Some models ignore it.")
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
 
     st.divider()
@@ -717,15 +929,26 @@ with st.sidebar:
         st.warning("⚠️ A custom endpoint receives your API key and every prompt "
                    "(including the raw text on the Unprotected side). Use test data "
                    "only, and only with services you trust.")
-        custom_url = st.text_input("Base URL", value=os.getenv("CUSTOM_BASE_URL", ""),
-                                   placeholder="https://api.example.com/v1", key="custom_base_url").strip()
+        # Restore what was typed earlier (widget state is dropped whenever another
+        # provider is selected), then render the widgets WITHOUT value= so the
+        # restored session_state values are used.
+        _store = st.session_state.custom_store
+        for _k, _default in CUSTOM_FIELD_DEFAULTS.items():
+            if _k not in st.session_state:
+                st.session_state[_k] = _store.get(_k, _default)
+
+        custom_url = st.text_input("Base URL", placeholder="https://api.example.com/v1",
+                                   key="custom_base_url").strip()
         custom_key_input = st.text_input("API key", type="password", key="custom_api_key_input",
                                          help="Kept in this browser session only; never written to disk or logs. "
                                               "Leave blank to use CUSTOM_API_KEY from .env, or for keyless local endpoints.").strip()
-        custom_model = st.text_input("Model name", value=os.getenv("CUSTOM_MODEL", ""),
-                                     placeholder="e.g. gpt-4o-mini", key="custom_model_name").strip()
-        custom_sys_as_user = st.checkbox("Endpoint rejects 'system' messages", value=False, key="custom_sys_as_user",
+        custom_model = st.text_input("Model name", placeholder="e.g. gpt-4o-mini",
+                                     key="custom_model_name").strip()
+        custom_sys_as_user = st.checkbox("Endpoint rejects 'system' messages", key="custom_sys_as_user",
                                          help="Sends the redaction note inside the first user message instead.")
+
+        for _k in CUSTOM_FIELD_DEFAULTS:
+            _store[_k] = st.session_state[_k]
 
         url_ok, url_err = (False, "")
         if custom_url:
@@ -773,7 +996,7 @@ with st.container():
     st.markdown('<div class="fixed-header-container"></div>', unsafe_allow_html=True)
     col_t, col_u = st.columns([0.85, 0.15])
     with col_t:
-        st.title("Spooky 𔓎")
+        st.title("Spooky 𔓎", anchor=False)
         disp_id = f"{PS_APP_ID[:16]}..."
         c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
         policy_disp = PS_POLICY_NAME if PS_POLICY_NAME else "(connector default)"
@@ -785,9 +1008,24 @@ with st.container():
         st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
         with st.popover("➕ Upload"):
             uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg", "xlsx"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
+            sample_choice = NO_SAMPLE
+            _samples = list_sample_files()
+            if _samples:
+                st.markdown("**…or try a built-in sample**")
+                sample_choice = st.selectbox("Built-in sample files", [NO_SAMPLE] + _samples,
+                                             key=f"s_{st.session_state.uploader_key}",
+                                             label_visibility="collapsed")
+                st.button("⚡ Send sample with a ready-made prompt", use_container_width=True,
+                          disabled=(sample_choice == NO_SAMPLE), on_click=send_sample_prompt,
+                          args=(sample_choice,), key=f"sb_{st.session_state.uploader_key}")
         st.markdown('</div>', unsafe_allow_html=True)
-        if uploaded_file:
-            st.caption(f"📎 Archivo adjunto y listo: **{uploaded_file.name}** — escribí tu mensaje abajo y presioná Enter para enviarlo junto con el archivo.")
+
+        # An uploaded file wins over a built-in sample.
+        attached_file = uploaded_file or load_sample_file(sample_choice)
+
+# Shown full-width under the header (inside the narrow upload column it wrapped into a tall block).
+if attached_file:
+    st.caption(f"📎 Archivo adjunto y listo: **{attached_file.name}** — escribí tu mensaje abajo y presioná Enter para enviarlo junto con el archivo.")
 
 if selected_model in ["Unavailable", "Connection Error"]:
     if app_mode == "API (Custom)":
@@ -910,6 +1148,16 @@ def render_turn_notices(notices):
         else:
             show_redacted_notice()
 
+def render_sent_box(text, blocked=False):
+    """Shows the exact text handed to the model in one side-by-side column.
+    Both columns answer the SAME user prompt, but the Protected column sends
+    the redacted version — this makes that difference visible."""
+    with st.expander("📨 What the model received", expanded=False):
+        if blocked or text is None:
+            st.caption("Nothing — the prompt was blocked before it reached the model.")
+        else:
+            st.text(text)
+
 for i, m in enumerate(messages_list):
     if m.get("role") == "side_by_side":
         with st.chat_message("user"):
@@ -920,9 +1168,11 @@ for i, m in enumerate(messages_list):
             render_turn_notices(m.get("notices"))
             render_answer(m["protected_response"])
             render_turn_debug(m.get("debug"), debug_prompt, debug_response)
+            render_sent_box(m.get("protected_sent", m.get("user_prompt")), blocked=m.get("protected_blocked", False))
         with c_unprot:
             st.markdown("#### ⚠️ Unprotected Mode")
             render_answer(m["unprotected_response"])
+            render_sent_box(m["user_prompt"])
     else:
         if m["role"] == "assistant":
             dbg = m.get("debug") or {}
@@ -956,26 +1206,28 @@ for i, m in enumerate(messages_list):
                 st.write(m["content"])
 
 # CHAT INPUT & PROCESSING
-chat_v = st.chat_input("How can I help you safely?")
+chat_v = st.chat_input("How can I help you safely?  (↑ recalls your previous prompts)")
 prompt = st.session_state.input_text if st.session_state.input_text else chat_v
 st.session_state.input_text = None
 
 if prompt and selected_model not in ["Unavailable", "Connection Error"]:
+    remember_prompt(prompt)   # arrow-up history (browser cookie)
+
     ctx, img = "", None
-    if uploaded_file:
-        t = uploaded_file.type; uploaded_file.seek(0)
-        if "text" in t or "csv" in t: ctx = f"\n\n[File: {uploaded_file.name}]\n{uploaded_file.read().decode('utf-8', errors='ignore')}"
+    if attached_file:
+        t = attached_file.type; attached_file.seek(0)
+        if "text" in t or "csv" in t: ctx = f"\n\n[File: {attached_file.name}]\n{attached_file.read().decode('utf-8', errors='ignore')}"
         elif "pdf" in t:
             try:
-                raw_pdf_text = "".join([p.extract_text() or "" for p in pypdf.PdfReader(uploaded_file).pages])
-                ctx = f"\n\n[PDF: {uploaded_file.name}]\n" + normalize_pdf_text(raw_pdf_text)
+                raw_pdf_text = "".join([p.extract_text() or "" for p in pypdf.PdfReader(attached_file).pages])
+                ctx = f"\n\n[PDF: {attached_file.name}]\n" + normalize_pdf_text(raw_pdf_text)
             except Exception: ctx = "\n[PDF Error]"
         elif "image" in t:
-            try: img = Image.open(uploaded_file); ctx = f"\n\n[Image: {uploaded_file.name}]"
+            try: img = Image.open(attached_file); ctx = f"\n\n[Image: {attached_file.name}]"
             except Exception: pass
         elif "spreadsheet" in t or "excel" in t:
             try:
-                wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+                wb = openpyxl.load_workbook(attached_file, data_only=True)
                 sheet_texts = []
                 for ws in wb.worksheets:
                     lines = [f"--- Sheet: {ws.title} ---"]
@@ -983,19 +1235,25 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                         if any(cell is not None for cell in row):
                             lines.append(" | ".join("" if c is None else str(c) for c in row))
                     sheet_texts.append("\n".join(lines))
-                ctx = f"\n\n[XLSX: {uploaded_file.name}]\n" + "\n\n".join(sheet_texts)
+                ctx = f"\n\n[XLSX: {attached_file.name}]\n" + "\n\n".join(sheet_texts)
             except Exception as e:
                 ctx = f"\n[XLSX Error: {e}]"
 
         # The file has been consumed for this message — reset the uploader
-        # widget so it doesn't silently get re-attached to the next message.
+        # (and the sample picker) so it doesn't silently get re-attached to
+        # the next message.
         st.session_state.uploader_key += 1
 
     full_p = f"{prompt if prompt else ''} {ctx}".strip()
 
     if full_p or img:
         # --- API METHOD ---
-        history = get_api_history(st.session_state.multi_messages[app_mode])
+        msgs = st.session_state.multi_messages[app_mode]
+        # Two separate replay histories: the protected conversation only ever
+        # replays text that already passed the security check (earlier prompts
+        # in their REDACTED form); the unprotected one replays the raw text.
+        history_prot = get_api_history(msgs, "protected")
+        history_raw = get_api_history(msgs, "raw")
 
         if side_by_side:
             with st.chat_message("user"):
@@ -1005,6 +1263,8 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
             col_prot, col_unprot = st.columns(2)
             protected_final = ""
             unprotected_final = ""
+            protected_sent, protected_blocked = None, False
+            protected_ok, unprotected_ok = False, False
             turn_debug = {"prompt_check": None, "response_check": None}
             turn_notices = []
 
@@ -1026,12 +1286,14 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                     render_debug_box(turn_debug["prompt_check"])
 
                 if not safe:
+                    protected_blocked = True
                     protected_final = CUSTOM_MESSAGES["blocked_prompt"]
                     st.error(protected_final)
                 else:
+                    protected_sent = check
                     with st.spinner("Generating protected output..."):
                         try:
-                            res_text = call_llm(app_mode, selected_model, history, check, img)
+                            res_text = call_llm(app_mode, selected_model, history_prot, check, img, protected=ps_enabled)
 
                             if res_text:
                                 # IMPORTANT: this response-level check is what actually catches
@@ -1042,6 +1304,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                                 s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
                                 turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
                                 protected_final = s_reply
+                                protected_ok = bool(s_safe)
 
                                 if s_status == "redacted":
                                     show_redacted_notice()
@@ -1061,16 +1324,19 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                         except Exception as e:
                             protected_final = f"⚠️ Error: {safe_err(e, 150)}"
                             st.error(protected_final)
+                render_sent_box(protected_sent, blocked=protected_blocked)
 
-            # RIGHT COLUMN: UNPROTECTED (Raw input)
+            # RIGHT COLUMN: UNPROTECTED (Raw input, no redaction note)
             with col_unprot:
                 st.markdown("#### ⚠️ Unprotected Mode")
                 with st.spinner("Generating raw output..."):
                     try:
-                        raw_res = call_llm(app_mode, selected_model, history, full_p, img, warn_img=False)
+                        raw_res = call_llm(app_mode, selected_model, history_raw, full_p, img,
+                                           warn_img=False, protected=False)
 
                         if raw_res:
                             unprotected_final = raw_res
+                            unprotected_ok = True
                             render_answer(unprotected_final)
                         else:
                             unprotected_final = "No response generated."
@@ -1078,12 +1344,17 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                     except Exception as e:
                         unprotected_final = f"⚠️ Error: {safe_err(e, 150)}"
                         st.error(unprotected_final)
+                render_sent_box(full_p)
 
             # Append whole side-by-side snapshot into session memory
-            st.session_state.multi_messages[app_mode].append({
+            msgs.append({
                 "role": "side_by_side",
                 "user_prompt": full_p,
+                "protected_sent": protected_sent,
+                "protected_blocked": protected_blocked,
+                "protected_ok": protected_ok,
                 "protected_response": protected_final,
+                "unprotected_ok": unprotected_ok,
                 "unprotected_response": unprotected_final,
                 "debug": turn_debug,
                 "notices": turn_notices
@@ -1092,7 +1363,6 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
 
         else:
             # SINGLE STANDARD VIEW
-            st.session_state.multi_messages[app_mode].append({"role": "user", "content": full_p})
             with st.chat_message("user"):
                 st.write(full_p)
                 if img: st.image(img, width=300)
@@ -1120,22 +1390,35 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
 
             refresh_metrics()
 
+            # "content" is what the user typed (shown in the chat); "sent" is
+            # what the model actually received (the redacted text) — only
+            # "sent" is replayed to the model on later turns.
+            user_entry = {"role": "user", "content": full_p, "sent": check if safe else None}
+
             if not safe:
                 m = CUSTOM_MESSAGES["blocked_prompt"]
-                st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": m, "debug": turn_debug, "notices": turn_notices})
+                user_entry["skip_history"] = True      # blocked content never goes back to the model
+                msgs.append(user_entry)
+                msgs.append({"role": "assistant", "content": m, "debug": turn_debug, "notices": turn_notices, "skip_history": True})
                 with st.chat_message("assistant"):
                     render_answer(m)
             else:
                 res_text, gen_error = None, None
                 with st.spinner("Thinking..."):
                     try:
-                        res_text = call_llm(app_mode, selected_model, history, check, img)
+                        res_text = call_llm(app_mode, selected_model, history_prot, check, img, protected=ps_enabled)
                     except Exception as e:
                         gen_error = e
 
                 if gen_error is not None:
-                    if "401" in str(gen_error): st.error(f"🚫 Auth Error: Your {app_mode} Key is invalid.")
-                    else: st.error(f"⚠️ Error: {safe_err(gen_error, 200)}...")
+                    if "401" in str(gen_error): err_msg = f"🚫 Auth Error: Your {app_mode} Key is invalid."
+                    else: err_msg = f"⚠️ Error: {safe_err(gen_error, 200)}..."
+                    st.error(err_msg)
+                    # Keep the failed turn on screen, but never replay it to the model
+                    # (an orphan user message breaks role alternation on some APIs).
+                    user_entry["skip_history"] = True
+                    msgs.append(user_entry)
+                    msgs.append({"role": "assistant", "content": err_msg, "debug": turn_debug, "notices": turn_notices, "skip_history": True})
                 elif res_text:
                     # Same fix as side-by-side: the response-level check's own
                     # status (Safe/Redacted/Blocked) must be shown for itself,
@@ -1162,10 +1445,22 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                         st.caption("🔎 Response Check")
                         render_debug_box(turn_debug["response_check"])
 
-                    st.session_state.multi_messages[app_mode].append({"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices})
+                    assistant_entry = {"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices}
+                    if not s_safe:
+                        user_entry["skip_history"] = True
+                        assistant_entry["skip_history"] = True
+                    msgs.append(user_entry)
+                    msgs.append(assistant_entry)
                 else:
-                    st.error("🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds.")
+                    err_msg = "🚨 Rate limit exceeded (429) or no models available. Please wait 60 seconds."
+                    st.error(err_msg)
+                    user_entry["skip_history"] = True
+                    msgs.append(user_entry)
+                    msgs.append({"role": "assistant", "content": err_msg, "debug": turn_debug, "notices": turn_notices, "skip_history": True})
 
             refresh_metrics()
+
+# Arrow-up prompt history: installs the key handler in the page (idempotent).
+install_arrow_up_history()
 
 st.sidebar.markdown('<div class="sidebar-footer">Made by Gastón Z and AI 🤖</div>', unsafe_allow_html=True)

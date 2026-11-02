@@ -1,0 +1,11 @@
+TEAM SYNC NOTES (FICTIONAL DEMO DATA)
+
+Attendees: Product, Design, Engineering
+Date: 2026-10-30
+
+- Roadmap review: the onboarding redesign moves to the next sprint.
+- Design will share updated mockups on Monday.
+- Engineering to estimate the effort for the new dashboard widgets.
+- Next sync: Thursday, 10:00.
+
+No customer data or credentials are included in these notes.

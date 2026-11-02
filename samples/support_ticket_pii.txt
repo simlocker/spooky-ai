@@ -1,0 +1,16 @@
+SUPPORT TICKET ESC-1001 (FICTIONAL DEMO DATA)
+
+Customer:     John Smith
+Email:        john.smith@acme-example.com
+Phone:        +1 (415) 555-0132
+Address:      4300 42nd Street, New York, NY 10001
+SSN:          111-22-3333
+Credit card:  4111 1111 1111 1111  (exp 09/28, CVV 737)
+IBAN:         GB82 WEST 1234 5698 7654 32
+
+Credentials pasted by the engineer while troubleshooting:
+AWS key:      AKIAIOSFODNN7EXAMPLE
+AWS secret:   wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+DB URL:       postgresql://admin:Sup3rS3cretPass@db-prod.acme-example.internal:5432/billing
+
+Issue: customer reports a duplicate charge on the card above and asks for a refund.

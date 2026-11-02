@@ -12,7 +12,11 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 - 🔌 **Bring your own endpoint** — type a Base URL, API key and model name in the sidebar; no code changes or rebuild needed
 - 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
 - 🔀 **Protection toggle** — switch Prompt Security off at any time to show the "before" picture
+- 🎯 **Consistent answers** — a toggle (on by default) that sets the model temperature to 0, so runs and the two side-by-side columns are comparable
+- 📨 **"What the model received"** — in side-by-side mode, each column has an expander showing the exact text sent to the model (the redacted prompt vs. the original)
 - 📎 **File uploads** — attach `.txt`, `.pdf`, `.xlsx`, `.png` or `.jpg` files; their text is extracted and scanned together with your prompt (images are only passed to Gemini)
+- 🧪 **Built-in sample files** — pick a ready-made, fictional file from the Upload menu (PII, secrets, a prompt-injection invoice, a clean control) and send it in one click
+- ⌨️ **Prompt history** — press ↑ / ↓ in the chat box to recall your last 10 prompts (kept in a browser cookie)
 - 💡 **Trigger prompts** — pre-built sample prompts organized by attack category (prompt injection, PII, jailbreaks, etc.)
 - 👤 **User identity** — set a user email passed to Prompt Security for per-user policy enforcement
 - 🧾 **Named policy** — optionally pin a specific Prompt Security policy instead of the connector default
@@ -104,12 +108,14 @@ The sidebar controls everything:
 | Control | What it does |
 | :--- | :--- |
 | **Enable Prompt Security** | Turns protection on/off. When off, prompts and responses go straight through |
-| **Side-by-side Comparison** | Sends each prompt twice: once through Prompt Security (🛡️ Protected) and once raw (⚠️ Unprotected) |
+| **Side-by-side Comparison** | Sends each prompt twice: once through Prompt Security (🛡️ Protected) and once raw (⚠️ Unprotected). Same user prompt, but the Protected column sends the redacted version — open *📨 What the model received* to see both |
+| **Consistent answers** | Temperature 0, so the same prompt gives (nearly) the same answer each time |
 | **User Identity** | The user email sent to Prompt Security with every check |
 | **Provider / Model** | Choose the LLM backend and model (details below) |
 | **Prompt Debug / Response Debug** | Show the security verdict and raw API response for the prompt and/or the model's answer |
 | **💡 Triggers** | One-click sample prompts grouped by attack category (editable in `triggers.txt`) |
-| **➕ Upload** (top right) | Attach a file to the next message |
+| **➕ Upload** (top right) | Attach your own file, or pick a built-in sample (and optionally send it with a ready-made prompt) |
+| **↑ / ↓ in the chat box** | Recall your previous prompts (last 10) |
 | **🗑️ Clear Current Chat** | Resets the history and counters for the current provider |
 
 Each provider keeps its own chat history, so you can switch providers without losing context.
@@ -123,6 +129,22 @@ Each provider keeps its own chat history, so you can switch providers without lo
 | Cohere | `command-a-03-2025`, `command-r-plus-08-2024`, `command-r-08-2024` |
 | OpenRouter | `openrouter/free` (auto-picks a live free model) or any model slug you type |
 | Custom | Any model name your endpoint serves |
+
+---
+
+## Built-in sample files
+
+The **➕ Upload** menu includes a *built-in sample* picker, so you can demo file handling without preparing a file. Pick one and either type your own message or press **⚡ Send sample with a ready-made prompt**. All data is fictional.
+
+| File | What it demonstrates |
+| :--- | :--- |
+| `support_ticket_pii.txt` | Names, email, phone, SSN, credit card, IBAN and cloud credentials in a plain-text ticket |
+| `payroll_export.xlsx` | A spreadsheet with emails, SSNs, IBANs and corporate card numbers |
+| `incident_report_secrets.pdf` | A PDF with AWS keys, a database URL with a password, and customer details |
+| `vendor_invoice_injection.txt` | An invoice carrying a hidden prompt-injection instruction (indirect injection through a file) |
+| `meeting_notes_clean.txt` | A clean control file that should pass untouched |
+
+Add your own by dropping `.txt`, `.pdf`, `.xlsx`, `.png` or `.jpg` files into the `samples/` folder; they appear in the picker automatically. An uploaded file always takes priority over a sample.
 
 ---
 
@@ -148,7 +170,7 @@ curl -s https://api.groq.com/openai/v1/models \
 
 Every `"id"` returned is a valid model name (ignore speech and safety-classifier models). The provider's documentation also lists them.
 
-If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead. Image uploads are not supported on Custom.
+If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead. Image uploads are not supported on Custom. The Base URL, API key and model name you type are remembered while you switch to other providers and back (for the current browser session only).
 
 ### Local models (Ollama, LM Studio)
 
@@ -183,6 +205,7 @@ Some details worth knowing:
 
 - **Redaction note for the model.** The app tells the LLM that bracketed tokens like `[REDACTED_EMAIL_ADDRESS_1]` are harmless placeholders, so smaller models don't refuse legitimate requests just because they see an unfamiliar token.
 - **Retries and errors.** If a security check fails (network error, rate limit, malformed backend reply), the app retries up to twice with a short backoff. If it still fails, the turn is clearly flagged as *"Security Check Error — content NOT verified"*; it is never displayed as "Safe", and the content continues unverified. Keep this in mind if you adapt the app for anything beyond a demo.
+- **Conversation history is protected too.** On follow-up questions the model only receives the *redacted* versions of earlier prompts. Blocked prompts, errors and empty answers are never replayed. In side-by-side mode each column keeps its own history (redacted on the left, original on the right).
 - **Stats.** Blocks, redactions, last latency and last violation are shown under *Session Stats* in the sidebar.
 
 ---
@@ -193,6 +216,7 @@ Some details worth knowing:
 spooky-ai/
 ├── app.py                 # Main Streamlit application
 ├── triggers.txt           # Sample prompts shown in the sidebar
+├── samples/               # Built-in sample files for the Upload menu
 ├── requirements.txt       # Python dependencies
 ├── Dockerfile
 ├── docker-compose.yml
@@ -200,7 +224,7 @@ spooky-ai/
 ├── .dockerignore
 ├── .gitignore
 └── .streamlit/
-    └── config.toml        # UI theme configuration
+    └── config.toml        # UI theme + toolbar settings (hides the Deploy button)
 ```
 
 ---
