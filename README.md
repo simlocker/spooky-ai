@@ -1,6 +1,6 @@
 # Spooky AI 👻
 
-A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers and lets you compare protected vs. unprotected behavior side by side.
+A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers — including your own custom endpoint — and lets you compare protected vs. unprotected behavior side by side.
 
 > **Prompt Security** provides real-time protection for AI applications: it detects and blocks prompt injection attacks, redacts sensitive data (PII, secrets), and enforces usage policies — all inline, before prompts reach the LLM and before responses reach the user.
 
@@ -8,12 +8,17 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 
 ## Features
 
-- 🤖 **Four LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, and OpenRouter
+- 🤖 **Five LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, OpenRouter, and **Custom** (any OpenAI-compatible endpoint)
+- 🔌 **Bring your own endpoint** — type a Base URL, API key and model name in the sidebar; no code changes or rebuild needed
 - 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
-- 📎 **File uploads** — attach `.txt`, `.pdf`, or image files to your prompts
+- 🔀 **Protection toggle** — switch Prompt Security off at any time to show the "before" picture
+- 📎 **File uploads** — attach `.txt`, `.pdf`, `.xlsx`, `.png` or `.jpg` files; their text is extracted and scanned together with your prompt (images are only passed to Gemini)
 - 💡 **Trigger prompts** — pre-built sample prompts organized by attack category (prompt injection, PII, jailbreaks, etc.)
 - 👤 **User identity** — set a user email passed to Prompt Security for per-user policy enforcement
-- 📊 **Session stats** — live block/redaction counters and latency per session
+- 🧾 **Named policy** — optionally pin a specific Prompt Security policy instead of the connector default
+- 🔎 **Debug views** — per-turn *Prompt Debug* and *Response Debug* boxes showing the status (Safe / Redacted / Blocked) and the raw `/api/protect` JSON
+- 📊 **Session stats** — live block/redaction counters, latency and last violation per session
+- 🗣️ **Custom user-facing messages** — block and redaction messages are defined in `app.py` (`CUSTOM_MESSAGES`), so you can tailor them to your demo narrative
 
 ---
 
@@ -21,7 +26,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 
 - Docker and Docker Compose
 - A **Prompt Security** account with an App ID and Gateway URL (mandatory)
-- At least **one** LLM API key (Gemini, Groq, Openrouter and Cohere are all FREE)
+- At least **one** LLM API key (Gemini, Groq, OpenRouter and Cohere all have free tiers), **or** access to any OpenAI-compatible endpoint via the Custom provider
 
 ---
 
@@ -41,17 +46,42 @@ cp .env.example .env
 nano .env
 ```
 
-Fill in your keys and Prompt Security credentials:
+Fill in your keys and Prompt Security credentials. Keep `.env` private and out of version control.
+
+**Prompt Security**
 
 | Variable | Required | Description |
 | :--- | :---: | :--- |
 | `PS_APP_ID` | ✅ | Your Prompt Security App ID |
 | `PS_GATEWAY_URL` | ✅ | Your Prompt Security Gateway base URL (e.g. `https://xxxxx.prompt.security`) |
-| `DEMO_USER_EMAIL` | — | Email identity sent to PS for per-user policies (default: `user@example.com`) |
+| `PS_POLICY_NAME` | — | Pin a named policy (Homegrown Apps > Policies > *Manage Policies*). Blank = the connector's default policy |
+| `DEMO_USER_EMAIL` | — | Default identity sent to PS for per-user policies (default: `john.doe@unknown.com`). Editable in the sidebar |
+| `SHOW_CUSTOM_NOTICES` | — | `true` (default) shows the "redacted" / "security check error" banners; `false` hides them. Block messages are always shown |
+
+**LLM providers** (at least one required, unless you use Custom)
+
+| Variable | Required | Description |
+| :--- | :---: | :--- |
 | `GEMINI_FREE_API_KEY` | ⬇️ one required | Google AI Studio key — [get one free](https://aistudio.google.com/app/apikey) |
 | `GROQ_API_KEY` | ⬇️ one required | Groq key — [get one free](https://console.groq.com/keys) |
 | `COHERE_API_KEY` | optional | Cohere key — [free trial](https://dashboard.cohere.com/api-keys) |
 | `OPENROUTER_API_KEY` | optional | OpenRouter key — [free models available](https://openrouter.ai/keys) |
+
+**Gemini model selection** (all optional)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `AUTO_SELECT_GEMINI_MODEL` | `true` | Pick a model automatically; `false` shows a model dropdown |
+| `DEFAULT_GEMINI_MODEL` | `gemini-2.0-flash` | Preferred model |
+| `FALLBACK_GEMINI_MODELS` | — | Comma-separated models to try if the preferred one is rate-limited (HTTP 429) |
+
+**Custom endpoint** (all optional — see [Custom endpoints](#custom-endpoints))
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `ALLOW_CUSTOM_ENDPOINTS` | `true` | Shows the **Custom** provider; `false` hides it |
+| `ALLOW_PRIVATE_ENDPOINTS` | `false` | `true` lets Custom reach `http://`, localhost and private networks |
+| `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` | — | Pre-fills for the Custom provider's sidebar fields |
 
 ### 3. Run with Docker
 
@@ -63,11 +93,97 @@ docker compose up -d --build
 
 Navigate to **http://your-ip-address:8501** in your browser.
 
+> **Updating:** the project folder is mounted into the container, so edits to `app.py` are read from disk. Run `docker compose restart` after code or `.env` changes, and `docker compose up -d --build` after changing `requirements.txt`.
+
+---
+
+## Using the app
+
+The sidebar controls everything:
+
+| Control | What it does |
+| :--- | :--- |
+| **Enable Prompt Security** | Turns protection on/off. When off, prompts and responses go straight through |
+| **Side-by-side Comparison** | Sends each prompt twice: once through Prompt Security (🛡️ Protected) and once raw (⚠️ Unprotected) |
+| **User Identity** | The user email sent to Prompt Security with every check |
+| **Provider / Model** | Choose the LLM backend and model (details below) |
+| **Prompt Debug / Response Debug** | Show the security verdict and raw API response for the prompt and/or the model's answer |
+| **💡 Triggers** | One-click sample prompts grouped by attack category (editable in `triggers.txt`) |
+| **➕ Upload** (top right) | Attach a file to the next message |
+| **🗑️ Clear Current Chat** | Resets the history and counters for the current provider |
+
+Each provider keeps its own chat history, so you can switch providers without losing context.
+
+**Providers and models**
+
+| Provider | Models |
+| :--- | :--- |
+| Groq | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `groq/compound`, `groq/compound-mini` |
+| Gemini | Chosen automatically (or from a list when `AUTO_SELECT_GEMINI_MODEL=false`) |
+| Cohere | `command-a-03-2025`, `command-r-plus-08-2024`, `command-r-08-2024` |
+| OpenRouter | `openrouter/free` (auto-picks a live free model) or any model slug you type |
+| Custom | Any model name your endpoint serves |
+
+---
+
+## Custom endpoints
+
+Pick **Custom** in the *Provider* dropdown and fill in:
+
+| Field | Example |
+| :--- | :--- |
+| Base URL | `https://api.groq.com/openai/v1` |
+| API key | your key (kept in the browser session only; never written to disk) |
+| Model name | `openai/gpt-oss-20b` |
+
+Any service that exposes the OpenAI chat-completions API (`POST {Base URL}/chat/completions`) works: OpenAI, Azure OpenAI, Groq, Together, Mistral, DeepSeek, LiteLLM, vLLM, Ollama, LM Studio, and many more. Prompt Security protection applies exactly the same, because it runs before and after the LLM call regardless of which model sits behind it.
+
+**Finding the exact model name.** Most OpenAI-compatible services list their models at `{Base URL}/models`. For example, for Groq:
+
+```bash
+curl -s https://api.groq.com/openai/v1/models \
+  -H "Authorization: Bearer $(grep ^GROQ_API_KEY= .env | cut -d= -f2)" \
+  | python3 -m json.tool | grep '"id"'
+```
+
+Every `"id"` returned is a valid model name (ignore speech and safety-classifier models). The provider's documentation also lists them.
+
+If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead. Image uploads are not supported on Custom.
+
+### Local models (Ollama, LM Studio)
+
+Set `ALLOW_PRIVATE_ENDPOINTS=true` in `.env`, then use e.g. `http://host.docker.internal:11434/v1` as the Base URL (inside Docker, `localhost` is the container itself, not your machine). On Linux, add this to the `hybrid-chatbot` service in `docker-compose.yml` so the name resolves:
+
+```yaml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+### Security notes
+
+- **The app server makes the request.** By default the Custom provider only accepts `https://` URLs that resolve to public IP addresses, and it does not follow redirects. This prevents the app from being used to probe internal networks (SSRF). Enable `ALLOW_PRIVATE_ENDPOINTS` only on a machine you control, never on a shared deployment.
+- **Endpoints see everything.** A custom endpoint receives your API key and every prompt — including the raw text on the *Unprotected* side of side-by-side mode. Use test data only, and only with services you trust. Be especially careful with unfamiliar "cheap/free API" resellers: you can't verify who operates them, what they log, or which model is really behind them.
+- To remove the feature entirely, set `ALLOW_CUSTOM_ENDPOINTS=false`.
+
 ---
 
 ## How Protection Works
 
-The app calls the LLM provider directly. Before each call, the prompt is sent to the Prompt Security `/api/protect` endpoint — which either blocks it, redacts sensitive content, or passes it through clean. The LLM response goes through the same check before being shown to the user.
+The app calls the LLM provider directly. Before each call, the prompt (plus the text extracted from any attached file) is sent to the Prompt Security `/api/protect` endpoint, which returns one of three outcomes:
+
+| Outcome | What the app does |
+| :--- | :--- |
+| **Blocked** | The prompt is never sent to the LLM; the user sees the block message from `CUSTOM_MESSAGES` |
+| **Redacted** | The redacted text (e.g. `[REDACTED_CREDIT_CARD_1]`) is sent to the LLM instead of the original, and a notice is shown |
+| **Safe** | The prompt passes through unchanged |
+
+The LLM's response goes through the same check before it is shown, so sensitive data the model echoes back is caught too. Each check is reported separately (a clean prompt can still produce a redacted response).
+
+Some details worth knowing:
+
+- **Redaction note for the model.** The app tells the LLM that bracketed tokens like `[REDACTED_EMAIL_ADDRESS_1]` are harmless placeholders, so smaller models don't refuse legitimate requests just because they see an unfamiliar token.
+- **Retries and errors.** If a security check fails (network error, rate limit, malformed backend reply), the app retries up to twice with a short backoff. If it still fails, the turn is clearly flagged as *"Security Check Error — content NOT verified"*; it is never displayed as "Safe", and the content continues unverified. Keep this in mind if you adapt the app for anything beyond a demo.
+- **Stats.** Blocks, redactions, last latency and last violation are shown under *Session Stats* in the sidebar.
 
 ---
 
@@ -81,6 +197,8 @@ spooky-ai/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example           # Environment variable template
+├── .dockerignore
+├── .gitignore
 └── .streamlit/
     └── config.toml        # UI theme configuration
 ```
