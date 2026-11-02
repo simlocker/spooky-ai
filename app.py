@@ -231,16 +231,62 @@ PS_POLICY_NAME = os.getenv("PS_POLICY_NAME", "").strip()
 ALLOW_CUSTOM_ENDPOINTS = get_env_bool("ALLOW_CUSTOM_ENDPOINTS", True)
 ALLOW_PRIVATE_ENDPOINTS = get_env_bool("ALLOW_PRIVATE_ENDPOINTS", False)
 
-# Sidebar values for the Custom provider. Streamlit throws away the state of any
-# widget that is not drawn during a run, so typing a URL/key/model and then
-# switching to another provider used to wipe them. These defaults (plus the
-# "custom_store" copy kept in session_state) let us restore them on return.
-CUSTOM_FIELD_DEFAULTS = {
-    "custom_base_url": os.getenv("CUSTOM_BASE_URL", ""),
-    "custom_api_key_input": "",
-    "custom_model_name": os.getenv("CUSTOM_MODEL", ""),
-    "custom_sys_as_user": False,
-}
+# ----------------------------------------------------------
+# Custom providers (any number, each with a name you choose)
+# ----------------------------------------------------------
+# A custom provider is any service exposing the OpenAI chat-completions API.
+# Providers live in st.session_state.custom_profiles ({name: settings}) for the
+# current browser session. They can be pre-loaded from .env:
+#   CUSTOM_PROVIDERS = JSON list, e.g.
+#     [{"name": "Mistral", "base_url": "https://api.mistral.ai/v1",
+#       "api_key_env": "MISTRAL_API_KEY", "model": "mistral-small-latest"}]
+#   (api_key_env names an environment variable, so the key itself stays out
+#    of the JSON; "api_key" with a literal value also works.)
+#   CUSTOM_BASE_URL / CUSTOM_API_KEY / CUSTOM_MODEL = one extra provider named "Custom".
+CUSTOM_MODE_PREFIX = "API (Custom: "
+ADD_PROVIDER_LABEL = "➕ Add custom provider…"
+ADD_MODE = "API (Custom: new)"
+TYPE_MODEL_OPTION = "✏️ Type a model name…"
+CUSTOM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,29}$")
+RESERVED_PROVIDER_NAMES = {"groq", "gemini", "cohere", "openrouter"}
+# Model ids that are clearly not chat models (hidden unless "show all" is ticked).
+NON_CHAT_MODEL_RE = re.compile(r"(embed|moderat|whisper|tts|speech|transcri|rerank|dall-?e|image|guard|ocr)", re.I)
+
+def is_custom_mode(mode):
+    return str(mode).startswith(CUSTOM_MODE_PREFIX)
+
+def custom_mode_for(name):
+    return f"{CUSTOM_MODE_PREFIX}{name})"
+
+def profile_label(name):
+    return f"{name} (custom)"
+
+def new_profile(base_url="", api_key="", model="", system_as_user=False):
+    return {"base_url": base_url, "api_key": api_key, "model": model,
+            "system_as_user": bool(system_as_user), "models_all": [], "models_error": "", "show_all_models": False}
+
+def load_env_profiles():
+    """Providers pre-loaded from .env (see the comment above)."""
+    found = {}
+    def add(name, url, key, model, sys_flag=False):
+        name = (name or "").strip()
+        if (CUSTOM_NAME_RE.match(name) and name.lower() not in RESERVED_PROVIDER_NAMES
+                and name.lower() not in {n.lower() for n in found} and (url or "").strip()):
+            found[name] = new_profile((url or "").strip(), (key or "").strip(), (model or "").strip(), sys_flag)
+    raw = os.getenv("CUSTOM_PROVIDERS", "").strip()
+    if len(raw) > 1 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1]          # older docker-compose versions keep the quotes around .env values
+    if raw:
+        try:
+            for entry in json.loads(raw):
+                key = os.getenv(entry.get("api_key_env", ""), "") if entry.get("api_key_env") else entry.get("api_key", "")
+                add(entry.get("name"), entry.get("base_url"), key, entry.get("model"), entry.get("system_as_user", False))
+        except Exception:
+            # malformed JSON: keep the app working, but tell the user (shown in the sidebar)
+            st.session_state["custom_env_error"] = "CUSTOM_PROVIDERS in .env is not valid JSON, so it was ignored."
+    if os.getenv("CUSTOM_BASE_URL", "").strip():
+        add("Custom", os.getenv("CUSTOM_BASE_URL"), os.getenv("CUSTOM_API_KEY", ""), os.getenv("CUSTOM_MODEL", ""))
+    return found
 
 # Fixed OpenAI-compatible providers. Groq, Cohere's Compatibility API and
 # OpenRouter all speak the OpenAI chat-completions protocol, so they share one
@@ -309,13 +355,13 @@ def show_security_error_notice():
     if SHOW_CUSTOM_NOTICES:
         st.error(CUSTOM_MESSAGES["security_check_error"])
 
-ALL_MODES = ["API (Gemini)", "API (Groq)", "API (Cohere)", "API (OpenRouter)", "API (Custom)"]
+ALL_MODES = ["API (Gemini)", "API (Groq)", "API (Cohere)", "API (OpenRouter)", ADD_MODE]
 
 if "multi_messages" not in st.session_state:
     st.session_state.multi_messages = {m: [] for m in ALL_MODES}
 if "session_costs" not in st.session_state:
     st.session_state.session_costs = {m: 0.0 for m in ALL_MODES}
-# Upgrade path: if a session started before "API (Custom)" existed, add it.
+# Custom providers add their own chat histories later (see the sidebar).
 for _m in ALL_MODES:
     st.session_state.multi_messages.setdefault(_m, [])
     st.session_state.session_costs.setdefault(_m, 0.0)
@@ -331,9 +377,12 @@ if "last_processed_file" not in st.session_state: st.session_state.last_processe
 if "gemini_available_models" not in st.session_state: st.session_state.gemini_available_models = []
 if "selected_gemini_model" not in st.session_state: st.session_state.selected_gemini_model = None
 if "custom_cfg" not in st.session_state: st.session_state.custom_cfg = {}
-if "custom_store" not in st.session_state: st.session_state.custom_store = dict(CUSTOM_FIELD_DEFAULTS)
+if "custom_profiles" not in st.session_state: st.session_state.custom_profiles = load_env_profiles()
+for _n in st.session_state.custom_profiles:
+    st.session_state.multi_messages.setdefault(custom_mode_for(_n), [])
+    st.session_state.session_costs.setdefault(custom_mode_for(_n), 0.0)
 if "deterministic" not in st.session_state: st.session_state.deterministic = True
-if "custom_url_check" not in st.session_state: st.session_state.custom_url_check = None
+if "custom_url_cache" not in st.session_state: st.session_state.custom_url_cache = {}
 
 # ==========================================================
 # --- HELPERS ---
@@ -352,13 +401,15 @@ def set_prompt(text):
     st.session_state.uploader_key += 1
 
 def safe_err(e, limit=200):
-    """Stringify an exception for display, scrubbing the custom API key if an
-    endpoint happens to echo it back in an error message."""
-    s = str(e)
-    key = (st.session_state.get("custom_cfg") or {}).get("api_key")
-    if key and len(key) >= 6:
-        s = s.replace(key, "***")
-    return s[:limit]
+    """Stringify an exception for display, scrubbing every custom API key if an
+    endpoint happens to echo one back in an error message."""
+    text = str(e)
+    keys = [(st.session_state.get("custom_cfg") or {}).get("api_key")]
+    keys += [p.get("api_key") for p in (st.session_state.get("custom_profiles") or {}).values()]
+    for key in keys:
+        if key and len(key) >= 6:
+            text = text.replace(key, "***")
+    return text[:limit]
 
 def render_debug_box(info):
     if not info: return
@@ -513,13 +564,101 @@ def validate_custom_url(url):
 def check_custom_url_cached(url, ttl=60):
     """validate_custom_url() does a DNS lookup; Streamlit reruns the script on
     every interaction, so cache the verdict briefly per URL."""
-    cached = st.session_state.custom_url_check
+    cache = st.session_state.custom_url_cache
     now = time.time()
-    if cached and cached["url"] == url and now - cached["ts"] < ttl:
-        return cached["ok"], cached["err"]
+    hit = cache.get(url)
+    if hit and now - hit[2] < ttl:
+        return hit[0], hit[1]
     ok, err = validate_custom_url(url)
-    st.session_state.custom_url_check = {"url": url, "ok": ok, "err": err, "ts": now}
+    cache[url] = (ok, err, now)
     return ok, err
+
+def normalize_base_url(url):
+    """Forgiving input: strips trailing slashes and a pasted /chat/completions or /models."""
+    u = (url or "").strip().rstrip("/")
+    for suffix in ("/chat/completions", "/models"):
+        if u.lower().endswith(suffix):
+            u = u[: -len(suffix)].rstrip("/")
+    return u
+
+def fetch_models(base_url, api_key):
+    """Asks an OpenAI-compatible endpoint for its models: GET {base_url}/models.
+    Same safety rules as chat requests (URL validation, no redirects, timeout).
+    Returns a sorted list of model ids; raises ValueError with a readable message."""
+    ok, err = validate_custom_url(base_url)
+    if not ok:
+        raise ValueError(err)
+    headers = {"Accept": "application/json"}
+    if api_key and api_key != "not-needed":
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        with httpx.Client(follow_redirects=False, timeout=15.0) as client:
+            resp = client.get(base_url.rstrip("/") + "/models", headers=headers)
+    except httpx.HTTPError as exc:
+        raise ValueError(f"Could not reach the endpoint ({type(exc).__name__}).")
+    if resp.status_code in (401, 403):
+        raise ValueError(f"The endpoint rejected the API key (HTTP {resp.status_code}).")
+    if resp.status_code in (404, 405):
+        raise ValueError(f"This endpoint doesn't list its models (HTTP {resp.status_code}) — type the model name instead.")
+    if resp.status_code != 200:
+        raise ValueError(f"Unexpected response from the endpoint (HTTP {resp.status_code}).")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise ValueError("The endpoint did not return JSON — check the Base URL (it usually ends in /v1).")
+    items = data.get("data") if isinstance(data, dict) else data
+    if items is None and isinstance(data, dict):
+        items = data.get("models")
+    if not isinstance(items, list) or not items:
+        raise ValueError("The endpoint returned no model list — type the model name instead.")
+    ids = set()
+    for item in items:
+        if isinstance(item, dict):
+            mid = item.get("id") or item.get("name") or item.get("model")
+        else:
+            mid = item
+        if isinstance(mid, str) and mid.strip():
+            ids.add(mid.strip())
+    if not ids:
+        raise ValueError("The endpoint returned no usable model names — type the model name instead.")
+    return sorted(ids)[:500]
+
+def create_profile_callback():
+    """'Create provider' button: validates the form and stores a new provider."""
+    ss = st.session_state
+    name = (ss.get("np_name") or "").strip()
+    url = normalize_base_url(ss.get("np_url") or "")
+    key = (ss.get("np_key") or "").strip()
+    err = None
+    if not CUSTOM_NAME_RE.match(name):
+        err = "Name: 1–30 characters, starting with a letter or number; letters, numbers, spaces, - _ . only."
+    elif name.lower() in RESERVED_PROVIDER_NAMES or name.lower() in {n.lower() for n in ss.custom_profiles}:
+        err = f"The name “{name}” is already taken."
+    else:
+        ok, uerr = validate_custom_url(url)
+        if not ok:
+            err = uerr
+    if err:
+        ss.np_error = err
+        return
+    ss.custom_profiles[name] = new_profile(url, key)
+    ss.multi_messages.setdefault(custom_mode_for(name), [])
+    ss.session_costs.setdefault(custom_mode_for(name), 0.0)
+    ss.np_error = ""
+    ss.np_name = ss.np_url = ss.np_key = ""
+    ss.provider_select = profile_label(name)      # jump straight to the new provider
+
+def delete_profile_callback(name):
+    """'Delete' button: removes the provider, its chat history and its widget state."""
+    ss = st.session_state
+    ss.custom_profiles.pop(name, None)
+    ss.multi_messages.pop(custom_mode_for(name), None)
+    ss.session_costs.pop(custom_mode_for(name), None)
+    for k in [k for k in list(ss.keys()) if str(k).startswith(f"cp::{name}::")]:
+        try: del ss[k]
+        except Exception: pass
+    ss.custom_cfg = {}
+    ss.provider_select = "Groq"
 
 # When Prompt Security redacts sensitive data, the LLM sees placeholder
 # tokens like [REDACTED_EMAIL_ADDRESS_1] or [REDACTED_CREDIT_CARD_1] instead
@@ -774,7 +913,7 @@ def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True, prot
         label = app_mode.replace("API (", "").rstrip(")")
         st.warning(f"🖼️ Image uploads are not currently supported by {label} in this app. Ignoring image.")
 
-    if app_mode == "API (Custom)":
+    if is_custom_mode(app_mode):
         cfg = st.session_state.custom_cfg
         return generate_openai_compatible_response(
             cfg["base_url"], cfg["api_key"], model_sel, history, prompt,
@@ -827,10 +966,29 @@ with st.sidebar:
 
     st.divider()
 
-    # Provider Selection — API integration is the only supported method
-    provider_options = ["Groq", "Gemini", "Cohere", "OpenRouter"] + (["Custom"] if ALLOW_CUSTOM_ENDPOINTS else [])
-    provider = st.selectbox("Provider:", provider_options, index=0)
-    app_mode = f"API ({provider})"
+    # Provider Selection — API integration is the only supported method.
+    # Built-in providers, then every custom provider by the name you gave it,
+    # then an entry that opens the "add custom provider" form.
+    custom_names = list(st.session_state.custom_profiles) if ALLOW_CUSTOM_ENDPOINTS else []
+    label_to_profile = {profile_label(n): n for n in custom_names}
+    provider_options = ["Groq", "Gemini", "Cohere", "OpenRouter"] + list(label_to_profile) + \
+                       ([ADD_PROVIDER_LABEL] if ALLOW_CUSTOM_ENDPOINTS else [])
+    if st.session_state.get("provider_select") not in provider_options:
+        st.session_state.provider_select = "Groq"      # first run, or a provider that was just deleted
+    provider = st.selectbox("Provider:", provider_options, key="provider_select")
+    if provider in label_to_profile:
+        active_profile = label_to_profile[provider]
+        app_mode = custom_mode_for(active_profile)
+    elif provider == ADD_PROVIDER_LABEL:
+        active_profile = None
+        app_mode = ADD_MODE
+    else:
+        active_profile = None
+        app_mode = f"API ({provider})"
+    st.session_state.multi_messages.setdefault(app_mode, [])
+    st.session_state.session_costs.setdefault(app_mode, 0.0)
+    if st.session_state.get("custom_env_error"):
+        st.caption("⚠️ " + st.session_state["custom_env_error"])
 
     if app_mode != st.session_state.current_integration:
         st.session_state.current_integration = app_mode
@@ -922,54 +1080,105 @@ with st.sidebar:
             else:
                 selected_model = "openrouter/free"
 
-    elif app_mode == "API (Custom)":
-        # Bring-your-own OpenAI-compatible endpoint: any service exposing
+    elif is_custom_mode(app_mode):
+        # Bring-your-own OpenAI-compatible endpoints: any service exposing
         # POST {base_url}/chat/completions (OpenAI, Azure OpenAI's /openai/v1,
         # Together, Mistral, DeepSeek, Ollama, LM Studio, LiteLLM, vLLM, ...).
         st.warning("⚠️ A custom endpoint receives your API key and every prompt "
                    "(including the raw text on the Unprotected side). Use test data "
                    "only, and only with services you trust.")
-        # Restore what was typed earlier (widget state is dropped whenever another
-        # provider is selected), then render the widgets WITHOUT value= so the
-        # restored session_state values are used.
-        _store = st.session_state.custom_store
-        for _k, _default in CUSTOM_FIELD_DEFAULTS.items():
-            if _k not in st.session_state:
-                st.session_state[_k] = _store.get(_k, _default)
+        selected_model = "Unavailable"
+        st.session_state.custom_cfg = {}        # rebuilt below once everything is valid
 
-        custom_url = st.text_input("Base URL", placeholder="https://api.example.com/v1",
-                                   key="custom_base_url").strip()
-        custom_key_input = st.text_input("API key", type="password", key="custom_api_key_input",
-                                         help="Kept in this browser session only; never written to disk or logs. "
-                                              "Leave blank to use CUSTOM_API_KEY from .env, or for keyless local endpoints.").strip()
-        custom_model = st.text_input("Model name", placeholder="e.g. gpt-4o-mini",
-                                     key="custom_model_name").strip()
-        custom_sys_as_user = st.checkbox("Endpoint rejects 'system' messages", key="custom_sys_as_user",
-                                         help="Sends the redaction note inside the first user message instead.")
-
-        for _k in CUSTOM_FIELD_DEFAULTS:
-            _store[_k] = st.session_state[_k]
-
-        url_ok, url_err = (False, "")
-        if custom_url:
-            url_ok, url_err = check_custom_url_cached(custom_url)
-            if not url_ok:
-                st.error(f"🔗 {url_err}")
-
-        effective_key = custom_key_input or os.getenv("CUSTOM_API_KEY", "").strip()
-        if custom_url and url_ok and not effective_key:
-            st.caption("No API key provided — sending a placeholder (fine for local/keyless endpoints).")
-
-        if custom_url and url_ok and custom_model:
-            selected_model = custom_model
-            st.session_state.custom_cfg = {
-                "base_url": custom_url,
-                "api_key": effective_key or "not-needed",
-                "system_as_user": custom_sys_as_user,
-            }
+        if active_profile is None:
+            # ---------------- form: add a new custom provider ----------------
+            st.markdown("**New custom provider**")
+            st.text_input("Name", placeholder="e.g. Mistral", key="np_name",
+                          help="Shown in the Provider list. 1–30 characters: letters, numbers, spaces, - _ .")
+            st.text_input("Base URL", placeholder="https://api.mistral.ai/v1", key="np_url")
+            st.text_input("API key", type="password", key="np_key",
+                          help="Kept in this browser session only; never written to disk or logs. Leave blank for keyless local endpoints.")
+            if st.session_state.get("np_error"):
+                st.error(st.session_state.np_error)
+            st.button("➕ Create provider", on_click=create_profile_callback, use_container_width=True, key="np_create")
+            st.caption("After creating it you can fetch the model list and pick a model.")
         else:
-            selected_model = "Unavailable"
-            st.session_state.custom_cfg = {}
+            # ---------------- an existing custom provider ----------------
+            prof = st.session_state.custom_profiles[active_profile]
+            pk = f"cp::{active_profile}::"
+            # Streamlit drops the state of widgets that aren't drawn, so restore
+            # what was typed earlier from the stored profile before drawing them.
+            for _f, _src in (("url", "base_url"), ("key", "api_key"), ("model_text", "model"),
+                             ("sys", "system_as_user"), ("show_all", "show_all_models")):
+                if pk + _f not in st.session_state:
+                    st.session_state[pk + _f] = prof[_src]
+
+            st.text_input("Base URL", placeholder="https://api.example.com/v1", key=pk + "url")
+            st.text_input("API key", type="password", key=pk + "key",
+                          help="Kept in this browser session only; never written to disk or logs. Leave blank for keyless local endpoints.")
+            custom_url = normalize_base_url(st.session_state[pk + "url"])
+            key_in = (st.session_state[pk + "key"] or "").strip()
+
+            url_ok = False
+            if custom_url:
+                url_ok, url_err = check_custom_url_cached(custom_url)
+                if not url_ok:
+                    st.error(f"🔗 {url_err}")
+            if custom_url and url_ok and not key_in:
+                st.caption("No API key provided — sending a placeholder (fine for local/keyless endpoints).")
+
+            # ---- model: fetch the list from the endpoint, or type a name ----
+            if st.button("🔄 Fetch models", key=pk + "fetch", use_container_width=True,
+                         disabled=not (custom_url and url_ok),
+                         help="Asks the endpoint for its model list (GET {Base URL}/models)."):
+                with st.spinner("Asking the endpoint for its models…"):
+                    try:
+                        prof["models_all"] = fetch_models(custom_url, key_in or "not-needed")
+                        prof["models_error"] = ""
+                    except Exception as exc:
+                        prof["models_all"] = []
+                        prof["models_error"] = safe_err(exc, 220)
+            if prof["models_error"]:
+                st.error(prof["models_error"])
+            all_ids = prof["models_all"]
+            show_all = st.checkbox("Include non-chat models (embeddings, speech…)", key=pk + "show_all") if all_ids else False
+            shown = all_ids if show_all else [m for m in all_ids if not NON_CHAT_MODEL_RE.search(m)]
+            if all_ids:
+                hidden = len(all_ids) - len(shown)
+                st.caption(f"{len(shown)} models found" + (f" · {hidden} non-chat hidden" if hidden else ""))
+            if shown:
+                opts = shown + [TYPE_MODEL_OPTION]
+                cur = prof["model"]
+                default_idx = shown.index(cur) if cur in shown else (len(opts) - 1 if cur else 0)
+                choice = st.selectbox("Model", opts, index=default_idx, key=pk + "model_choice")
+                if choice == TYPE_MODEL_OPTION:
+                    model_val = (st.text_input("Model name", placeholder="e.g. gpt-4o-mini", key=pk + "model_text") or "").strip()
+                else:
+                    model_val = choice
+            else:
+                model_val = (st.text_input("Model name", placeholder="e.g. gpt-4o-mini", key=pk + "model_text") or "").strip()
+
+            sys_flag = st.checkbox("Endpoint rejects 'system' messages", key=pk + "sys",
+                                   help="Sends the redaction note inside the first user message instead.")
+
+            # remember everything for when you come back to this provider
+            prof["base_url"] = st.session_state[pk + "url"]
+            prof["api_key"] = key_in
+            prof["model"] = model_val
+            prof["system_as_user"] = bool(sys_flag)
+            prof["show_all_models"] = bool(show_all)
+
+            st.button("🗑️ Delete this provider", on_click=delete_profile_callback, args=(active_profile,),
+                      use_container_width=True, key=pk + "del")
+
+            if custom_url and url_ok and model_val:
+                selected_model = model_val
+                st.session_state.custom_cfg = {
+                    "name": active_profile,
+                    "base_url": custom_url,
+                    "api_key": key_in or "not-needed",
+                    "system_as_user": bool(sys_flag),
+                }
 
     if selected_model not in ["Unavailable", "Connection Error"]:
         st.caption("Mode: API Integration")
@@ -1001,7 +1210,7 @@ with st.container():
         c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
         policy_disp = PS_POLICY_NAME if PS_POLICY_NAME else "(connector default)"
         endpoint_disp = ""
-        if app_mode == "API (Custom)" and st.session_state.custom_cfg:
+        if is_custom_mode(app_mode) and st.session_state.custom_cfg:
             endpoint_disp = f" | Endpoint: **{urlparse(st.session_state.custom_cfg['base_url']).hostname}**"
         st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**{endpoint_disp}\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}** | Policy: **{policy_disp}**")
     with col_u:
@@ -1028,8 +1237,11 @@ if attached_file:
     st.caption(f"📎 Archivo adjunto y listo: **{attached_file.name}** — escribí tu mensaje abajo y presioná Enter para enviarlo junto con el archivo.")
 
 if selected_model in ["Unavailable", "Connection Error"]:
-    if app_mode == "API (Custom)":
-        st.warning("⚠️ **Custom endpoint is not configured.**\n\nEnter a valid Base URL (https://…/v1) and a Model name in the sidebar.")
+    if is_custom_mode(app_mode):
+        if active_profile is None:
+            st.warning("➕ **Add a custom provider.**\n\nIn the sidebar, enter a name, a Base URL (https://…/v1) and an API key, then press *Create provider*.")
+        else:
+            st.warning(f"⚠️ **{active_profile} is not configured yet.**\n\nEnter a valid Base URL (https://…/v1) and choose or type a Model name in the sidebar.")
     else:
         st.warning(f"⚠️ **{app_mode} is not properly configured.**\n\nPlease add a valid API key to your `.env` file and restart Docker, or select a different integration.")
 

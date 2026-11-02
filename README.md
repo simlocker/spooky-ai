@@ -1,6 +1,6 @@
 # Spooky AI 👻
 
-A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers — including your own custom endpoint — and lets you compare protected vs. unprotected behavior side by side.
+A hands-on demo app showing how to build a secure AI chat interface powered by **[Prompt Security](https://prompt.security)** (a SentinelOne company). It supports multiple LLM providers — including any number of your own custom endpoints — and lets you compare protected vs. unprotected behavior side by side.
 
 > **Prompt Security** provides real-time protection for AI applications: it detects and blocks prompt injection attacks, redacts sensitive data (PII, secrets), and enforces usage policies — all inline, before prompts reach the LLM and before responses reach the user.
 
@@ -8,8 +8,8 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 
 ## Features
 
-- 🤖 **Five LLM integrations** — Gemini (free tier), Groq (free tier), Cohere, OpenRouter, and **Custom** (any OpenAI-compatible endpoint)
-- 🔌 **Bring your own endpoint** — type a Base URL, API key and model name in the sidebar; no code changes or rebuild needed
+- 🤖 **Four built-in LLM integrations** — Gemini (free tier), Groq (free tier), Cohere and OpenRouter — **plus as many custom providers as you like**
+- 🔌 **Bring your own endpoints** — add any OpenAI-compatible service from the sidebar, give it a name and **fetch its model list** with one click; no code changes or rebuild needed
 - 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
 - 🔀 **Protection toggle** — switch Prompt Security off at any time to show the "before" picture
 - 🎯 **Consistent answers** — a toggle (on by default) that sets the model temperature to 0, so runs and the two side-by-side columns are comparable
@@ -79,13 +79,14 @@ Fill in your keys and Prompt Security credentials. Keep `.env` private and out o
 | `DEFAULT_GEMINI_MODEL` | `gemini-2.0-flash` | Preferred model |
 | `FALLBACK_GEMINI_MODELS` | — | Comma-separated models to try if the preferred one is rate-limited (HTTP 429) |
 
-**Custom endpoint** (all optional — see [Custom endpoints](#custom-endpoints))
+**Custom providers** (all optional — see [Custom providers](#custom-providers))
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `ALLOW_CUSTOM_ENDPOINTS` | `true` | Shows the **Custom** provider; `false` hides it |
 | `ALLOW_PRIVATE_ENDPOINTS` | `false` | `true` lets Custom reach `http://`, localhost and private networks |
-| `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` | — | Pre-fills for the Custom provider's sidebar fields |
+| `CUSTOM_PROVIDERS` | — | Optional JSON list that pre-loads several named custom providers (see [Custom providers](#custom-providers)) |
+| `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` | — | Optional shortcut: pre-loads **one** extra provider named `Custom` |
 
 ### 3. Run with Docker
 
@@ -111,7 +112,7 @@ The sidebar controls everything:
 | **Side-by-side Comparison** | Sends each prompt twice: once through Prompt Security (🛡️ Protected) and once raw (⚠️ Unprotected). Same user prompt, but the Protected column sends the redacted version — open *📨 What the model received* to see both |
 | **Consistent answers** | Temperature 0, so the same prompt gives (nearly) the same answer each time |
 | **User Identity** | The user email sent to Prompt Security with every check |
-| **Provider / Model** | Choose the LLM backend and model (details below) |
+| **Provider / Model** | Choose the LLM backend and model. Custom providers appear under the name you gave them, followed by **➕ Add custom provider…** |
 | **Prompt Debug / Response Debug** | Show the security verdict and raw API response for the prompt and/or the model's answer |
 | **💡 Triggers** | One-click sample prompts grouped by attack category (editable in `triggers.txt`) |
 | **➕ Upload** (top right) | Attach your own file, or pick a built-in sample (and optionally send it with a ready-made prompt) |
@@ -128,7 +129,7 @@ Each provider keeps its own chat history, so you can switch providers without lo
 | Gemini | Chosen automatically (or from a list when `AUTO_SELECT_GEMINI_MODEL=false`) |
 | Cohere | `command-a-03-2025`, `command-r-plus-08-2024`, `command-r-08-2024` |
 | OpenRouter | `openrouter/free` (auto-picks a live free model) or any model slug you type |
-| Custom | Any model name your endpoint serves |
+| Custom providers | Any model your endpoint serves — pick it from the fetched list or type a name |
 
 ---
 
@@ -148,29 +149,45 @@ Add your own by dropping `.txt`, `.pdf`, `.xlsx`, `.png` or `.jpg` files into th
 
 ---
 
-## Custom endpoints
-
-Pick **Custom** in the *Provider* dropdown and fill in:
-
-| Field | Example |
-| :--- | :--- |
-| Base URL | `https://api.groq.com/openai/v1` |
-| API key | your key (kept in the browser session only; never written to disk) |
-| Model name | `openai/gpt-oss-20b` |
+## Custom providers
 
 Any service that exposes the OpenAI chat-completions API (`POST {Base URL}/chat/completions`) works: OpenAI, Azure OpenAI, Groq, Together, Mistral, DeepSeek, LiteLLM, vLLM, Ollama, LM Studio, and many more. Prompt Security protection applies exactly the same, because it runs before and after the LLM call regardless of which model sits behind it.
 
-**Finding the exact model name.** Most OpenAI-compatible services list their models at `{Base URL}/models`. For example, for Groq:
+### Add a provider
+
+1. In the *Provider* dropdown choose **➕ Add custom provider…**
+2. Fill in the form and press **Create provider**:
+
+   | Field | Example |
+   | :--- | :--- |
+   | Name | `Mistral` (1–30 characters; letters, numbers, spaces, `-` `_` `.`; must be unique) |
+   | Base URL | `https://api.mistral.ai/v1` |
+   | API key | your key (kept in the browser session only; never written to disk) |
+
+3. The new provider is selected automatically and appears in the list as `Mistral (custom)`.
+4. Press **🔄 Fetch models**: the app asks the endpoint for its model list (`GET {Base URL}/models`) and fills a dropdown. Pick a model and start chatting. Prefer typing? Choose **✏️ Type a model name…** (or just type it if the endpoint has no `/models`).
+
+You can create as many providers as you want. Each one has its own chat history and remembers its URL, key and model while you switch between providers. To remove one, select it and press **🗑️ Delete this provider**; to rename one, delete it and create it again.
+
+Tips:
+- Paste whatever URL you have: a trailing `/`, `/chat/completions` or `/models` is removed automatically.
+- Embedding, speech, moderation and similar non-chat models are hidden from the list; tick **Include non-chat models** to see them.
+- If an endpoint doesn't offer `/models` (some, like Azure OpenAI, use deployment names), the app says so and you type the model name.
+- If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead.
+- Image uploads are not supported on custom providers.
+- Providers you create in the sidebar last for the browser session. To have them ready every time, define them in `.env` (next section).
+
+### Pre-load providers from `.env`
 
 ```bash
-curl -s https://api.groq.com/openai/v1/models \
-  -H "Authorization: Bearer $(grep ^GROQ_API_KEY= .env | cut -d= -f2)" \
-  | python3 -m json.tool | grep '"id"'
+CUSTOM_PROVIDERS='[{"name":"Mistral","base_url":"https://api.mistral.ai/v1","api_key_env":"MISTRAL_API_KEY","model":"mistral-small-latest"},{"name":"Together","base_url":"https://api.together.xyz/v1","api_key_env":"TOGETHER_API_KEY"}]'
+MISTRAL_API_KEY=your_mistral_key
+TOGETHER_API_KEY=your_together_key
 ```
 
-Every `"id"` returned is a valid model name (ignore speech and safety-classifier models). The provider's documentation also lists them.
+Each entry takes `name` and `base_url` (required), plus optional `model`, `system_as_user` (`true`/`false`) and either `api_key_env` (the name of an environment variable holding the key — recommended, so keys stay out of the JSON) or a literal `api_key`. Entries with an invalid or already-used name are skipped; if the JSON itself is invalid, the sidebar shows a warning. Keep the whole value on one line, wrapped in single quotes.
 
-If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead. Image uploads are not supported on Custom. The Base URL, API key and model name you type are remembered while you switch to other providers and back (for the current browser session only).
+The older `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` variables still work and create one extra provider named `Custom`.
 
 ### Local models (Ollama, LM Studio)
 
@@ -183,9 +200,9 @@ Set `ALLOW_PRIVATE_ENDPOINTS=true` in `.env`, then use e.g. `http://host.docker.
 
 ### Security notes
 
-- **The app server makes the request.** By default the Custom provider only accepts `https://` URLs that resolve to public IP addresses, and it does not follow redirects. This prevents the app from being used to probe internal networks (SSRF). Enable `ALLOW_PRIVATE_ENDPOINTS` only on a machine you control, never on a shared deployment.
+- **The app server makes the request.** By default custom providers (including the model-list request) only accept `https://` URLs that resolve to public IP addresses, and it does not follow redirects. This prevents the app from being used to probe internal networks (SSRF). Enable `ALLOW_PRIVATE_ENDPOINTS` only on a machine you control, never on a shared deployment.
 - **Endpoints see everything.** A custom endpoint receives your API key and every prompt — including the raw text on the *Unprotected* side of side-by-side mode. Use test data only, and only with services you trust. Be especially careful with unfamiliar "cheap/free API" resellers: you can't verify who operates them, what they log, or which model is really behind them.
-- To remove the feature entirely, set `ALLOW_CUSTOM_ENDPOINTS=false`.
+- To remove the feature entirely, set `ALLOW_CUSTOM_ENDPOINTS=false`: the add form and every custom provider disappear.
 
 ---
 
