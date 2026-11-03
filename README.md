@@ -22,6 +22,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 - 🧾 **Named policy** — optionally pin a specific Prompt Security policy instead of the connector default
 - 🔎 **Debug views** — per-turn *Prompt Debug* and *Response Debug* boxes showing the status (Safe / Redacted / Blocked) and the raw `/api/protect` JSON
 - 📊 **Session stats** — live block/redaction counters, latency and last violation per session
+- 🎃 **Halloween mode** — click the **Spooky** title to switch a spooky theme on and off (bats, a witch, a spider that rappels onto the Upload button…). Purely cosmetic; the security behavior is identical
 - 🗣️ **Block messages that match the reason** — a jailbreak, a leaked secret, sensitive data, a banned topic… each gets its own explanation. All wording lives in `app.py` (`CUSTOM_MESSAGES` and `BLOCK_MESSAGES`), so you can tailor it to your demo narrative
 
 ---
@@ -85,6 +86,7 @@ Fill in your keys and Prompt Security credentials. Keep `.env` private and out o
 | :--- | :--- | :--- |
 | `ALLOW_CUSTOM_ENDPOINTS` | `true` | Shows the **Custom** provider; `false` hides it |
 | `ALLOW_PRIVATE_ENDPOINTS` | `false` | `true` lets Custom reach `http://`, localhost and private networks |
+| `PERSIST_PROVIDERS` | — | `false` (default). `true` saves custom providers — **including their API keys, in plain text** — to `data/providers.json` so they survive restarts. `data/` is git-ignored |
 | `CUSTOM_PROVIDERS` | — | Optional JSON list that pre-loads several named custom providers (see [Custom providers](#custom-providers)) |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` | — | Optional shortcut: pre-loads **one** extra provider named `Custom` |
 
@@ -149,6 +151,14 @@ Add your own by dropping `.txt`, `.pdf`, `.xlsx`, `.png` or `.jpg` files into th
 
 ---
 
+## Halloween mode 🎃
+
+Click the **Spooky** title (top left of the page) to switch the Halloween theme on; click it again to switch it off. The setting lasts for the browser session. In Halloween mode the sidebar turns deep purple with pumpkin-orange accents, titles use a spooky font, and a few decorations appear: bats, a ghost, a zombie hand and a "BOO!" bubble that peek in from the screen edges now and then, a witch on a broom, and a spider that rappels down onto the Upload button. Nothing blocks clicks, and nothing changes in how prompts are protected.
+
+Good to know: the spooky font (Creepster) is loaded from Google Fonts **only while the theme is on**; without internet access the app falls back to a generic cursive font. Everything else is drawn locally.
+
+---
+
 ## Custom providers
 
 Any service that exposes the OpenAI chat-completions API (`POST {Base URL}/chat/completions`) works: OpenAI, Azure OpenAI, Groq, Together, Mistral, DeepSeek, LiteLLM, vLLM, Ollama, LM Studio, and many more. Prompt Security protection applies exactly the same, because it runs before and after the LLM call regardless of which model sits behind it.
@@ -162,7 +172,7 @@ Any service that exposes the OpenAI chat-completions API (`POST {Base URL}/chat/
    | :--- | :--- |
    | Name | `Mistral` (1–30 characters; letters, numbers, spaces, `-` `_` `.`; must be unique) |
    | Base URL | `https://api.mistral.ai/v1` |
-   | API key | your key (kept in the browser session only; never written to disk) |
+   | API key | your key (kept in the browser session only; never written to disk — unless you enable `PERSIST_PROVIDERS`) |
 
 3. The new provider is selected automatically and appears in the list as `Mistral (custom)`.
 4. The app **fetches the model list by itself** (`GET {Base URL}/models`) and fills a dropdown that starts on *— choose a model —*, so a paid model is never picked silently. Pick one and start chatting. **🔄 Fetch models** refreshes the list. Prefer typing? Choose **✏️ Type a model name…** (or just type it if the endpoint has no `/models`).
@@ -177,7 +187,7 @@ Tips:
 - If an endpoint doesn't offer `/models` (some, like Azure OpenAI, use deployment names), the app says so and you type the model name.
 - If an endpoint rejects `system` messages, tick **Endpoint rejects 'system' messages** and the app will send its instructions inside the first user message instead.
 - Image uploads are not supported on custom providers.
-- Providers you create in the sidebar last for the browser session. To have them ready every time, define them in `.env` (next section).
+- Providers you create in the sidebar last for the browser session. To have them ready every time, define them in `.env` (next section) — or set `PERSIST_PROVIDERS=true` to save them automatically to `data/providers.json` (API keys in **plain text**: keep that folder private; it is already in `.gitignore` and `.dockerignore`).
 
 ### Pre-load providers from `.env`
 
@@ -252,6 +262,7 @@ spooky-ai/
 ├── app.py                 # Main Streamlit application
 ├── triggers.txt           # Sample prompts shown in the sidebar
 ├── samples/               # Built-in sample files for the Upload menu
+├── data/                  # (created on demand, git-ignored) saved providers when PERSIST_PROVIDERS=true
 ├── requirements.txt       # Python dependencies
 ├── Dockerfile
 ├── docker-compose.yml

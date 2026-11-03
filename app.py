@@ -1,4 +1,5 @@
 import streamlit as st
+import base64
 from google import genai
 from google.genai import types
 from openai import OpenAI, BadRequestError
@@ -48,7 +49,7 @@ http_session.mount('https://', TLSAdapter())
 # ==========================================================
 st.set_page_config(
     page_title="Spooky AI - Homegrown App",
-    page_icon="🛡️",
+    page_icon="👻",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -69,6 +70,36 @@ header { background: none !important; border: none !important; }
 /* 2. Sidebar Styling */
 [data-testid="stSidebar"] { background-color: #614869 !important; }
 [data-testid="stSidebar"] .block-container { padding-top: 2rem !important; gap: 0.5rem !important; }
+
+/* Sidebar collapse / expand button: the same screen position whether the sidebar is open or closed */
+[data-testid="stSidebarCollapseButton"], [data-testid="stExpandSidebarButton"] {
+    position: fixed !important; top: 0.4rem !important; left: 0.8rem !important; right: auto !important;
+    margin: 0 !important; z-index: 1000002 !important;
+}
+[data-testid="stSidebarCollapseButton"] button, [data-testid="stExpandSidebarButton"] {
+    width: 2rem !important; height: 2rem !important; min-height: 0 !important;
+}
+[data-testid="stSidebarCollapseButton"] { opacity: 1 !important; visibility: visible !important; }
+
+/* Compact sidebar: pull everything up, tighten headings and the divider */
+[data-testid="stSidebarHeader"] { height: 2.2rem !important; min-height: 0 !important; padding: 0.3rem 0.8rem 0 !important; }
+[data-testid="stSidebarUserContent"] { padding-top: 0 !important; padding-bottom: 0 !important; }
+/* Footer pinned to the bottom of the sidebar itself (sticky, so it always matches the sidebar width) */
+[data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"] { min-height: calc(100vh - 2.6rem); }
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.sidebar-footer) {
+    margin-top: auto; position: sticky; bottom: 0; z-index: 100;
+}
+
+/* Page title acts as a button: make it look like the old h1 */
+.st-key-title_btn button {
+    background: transparent !important; border: none !important; box-shadow: none !important;
+    padding: 0 !important; height: auto !important; min-height: 0 !important; justify-content: flex-start !important;
+}
+.st-key-title_btn button p { font-size: 2.75rem !important; font-weight: 700 !important; line-height: 1.25 !important; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.55rem !important; }
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { padding: 0.2rem 0 0.2rem !important; margin: 0 !important; line-height: 1.4 !important; }
+[data-testid="stSidebar"] [data-testid="stHeading"] { margin: 0 !important; }
+hr.sidebar-tight-hr { margin: 0.1rem 0 !important; border: none; border-top: 1px solid rgba(255,255,255,0.18); }
 
 /* Ensure Sidebar buttons are grey, not purple */
 [data-testid="stSidebar"] button {
@@ -117,8 +148,8 @@ header { background: none !important; border: none !important; }
 }
 
 .sidebar-footer {
-    position: fixed; bottom: 10px; left: 10px; width: 310px;
-    color: #A5B5D1; font-size: 15px; pointer-events: none;
+    box-sizing: border-box; padding: 0.5rem 0.2rem; background-color: #614869;
+    color: #A5B5D1; font-size: 14px; pointer-events: none;
 }
 
 /* 3. Chat Input Cleanup */
@@ -197,6 +228,266 @@ div[data-testid="stAlertContainer"], div[data-testid="stAlert"] {
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # ==========================================================
+# --- HALLOWEEN THEME (off by default; toggled by clicking the "Spooky" page title) ---
+# ==========================================================
+st.session_state.setdefault("halloween", False)
+
+def popover_keyed(label, key, **kwargs):
+    """st.popover with a stable key (the Halloween CSS targets .st-key-<key>). Older Streamlit
+    versions don't accept key= on popovers: fall back to a plain popover instead of crashing."""
+    try:
+        return st.popover(label, key=key, **kwargs)
+    except TypeError:
+        return st.popover(label, **kwargs)
+
+def toggle_halloween():
+    st.session_state.halloween = not st.session_state.halloween
+
+HALLOWEEN_CSS = """
+<style>
+/* Note: loads the Creepster font from Google Fonts once the theme is on; falls back to `cursive` offline. */
+@import url('https://fonts.googleapis.com/css2?family=Creepster&display=swap');
+
+.stApp { background: radial-gradient(ellipse at top, #1f1030 0%, #0d0713 70%) !important; }
+[data-testid="stVerticalBlock"] > div:has(div.fixed-header-container) { background-color: #0d0713 !important;
+    border-bottom: 1px solid rgba(255, 117, 24, 0.35) !important; }
+
+/* Sidebar: deep purple with a pumpkin-orange edge */
+[data-testid="stSidebar"] { background-color: #2a1340 !important; border-right: 2px solid #FF7518; }
+[data-testid="stSidebar"] button {
+    background-color: #170a24 !important; color: #FFD9B0 !important;
+    border: 1px solid rgba(255, 117, 24, 0.5) !important;
+}
+[data-testid="stSidebar"] button:hover { border-color: #FF7518 !important; color: #FF7518 !important; }
+.sidebar-footer { color: #C9A6E8 !important; background-color: #2a1340 !important; }
+
+/* Titles: spooky font, orange glow */
+h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    font-family: 'Creepster', cursive !important; letter-spacing: 0.06em; font-weight: 400 !important;
+    color: #FF7518 !important; text-shadow: 0 0 12px rgba(255, 117, 24, 0.55);
+}
+.st-key-title_btn button p {
+    font-family: 'Creepster', cursive !important; font-weight: 400 !important; font-size: 3.2rem !important;
+    letter-spacing: 0.06em; color: #FF7518 !important; text-shadow: 0 0 12px rgba(255, 117, 24, 0.55);
+}
+/* Evil pumpkin (SVG) after the title */
+.st-key-title_btn button p::after {
+    content: ''; display: inline-block; width: 1.15em; height: 1.05em; margin-left: 0.3em; vertical-align: -0.1em;
+    background: url("__PUMPKIN__") center / contain no-repeat;
+}
+/* Sidebar icons: coffin for "Clear chat", candle for "Triggers" */
+.st-key-clear_btn button p::before, .st-key-triggers_pop button p::before {
+    content: ''; display: inline-block; width: 1.1em; height: 1.35em; margin-right: 0.45em; vertical-align: -0.3em;
+    background: center / contain no-repeat;
+}
+.st-key-clear_btn button p::before { background-image: url("__COFFIN__"); }
+.st-key-triggers_pop button p::before { background-image: url("__CANDLE__"); }
+/* Upload button: dark purple, Creepster, scroll icon */
+.st-key-upload_pop { position: relative; }
+.st-key-upload_pop button {
+    background-color: #3a1458 !important; color: #FFB066 !important; border: 2px solid #FF7518 !important;
+    box-shadow: 0 0 10px rgba(255, 117, 24, 0.35) !important;
+}
+.st-key-upload_pop button:hover { box-shadow: 0 0 18px rgba(255, 117, 24, 0.8) !important; color: #fff !important; }
+.st-key-upload_pop button p { font-family: 'Creepster', cursive !important; font-size: 1.25rem !important; letter-spacing: 0.06em; font-weight: 400 !important; }
+.st-key-upload_pop button p::before {
+    content: ''; display: inline-block; width: 1.6em; height: 1.3em; margin-right: 0.4em; vertical-align: -0.3em;
+    background: url("__SCROLL__") center / contain no-repeat;
+}
+
+/* Spider: walks in from the right along the top edge, rappels down onto the Upload button a few
+   times, looks around, then walks off again. Thread = top part of the element, spider = bottom. */
+.st-key-upload_pop::after {
+    content: ''; position: absolute; top: -34px; left: 50%; margin-left: -15px; width: 30px; height: 30px;
+    background: url("__SPIDER__") center bottom / 30px 30px no-repeat,
+                linear-gradient(rgba(255,255,255,0.6), rgba(255,255,255,0.6)) center top / 1.5px 100% no-repeat;
+    transform-origin: 50% 0; pointer-events: none; z-index: 2000;
+    animation: hw-spider-x 80s ease-in-out 18s infinite backwards,
+               hw-spider-h 80s ease-in-out 18s infinite backwards,
+               hw-spider-sway 2.6s ease-in-out infinite alternate;
+}
+@keyframes hw-spider-x {
+    0%       { translate: 4rem 0; opacity: 0; }
+    1.5%     { opacity: 1; }
+    5%, 20%  { translate: 0 0; opacity: 1; }
+    23.5%    { opacity: 1; }
+    25%, 100% { translate: 4rem 0; opacity: 0; }
+}
+@keyframes hw-spider-h {
+    0%, 5%   { height: 30px; }
+    7%, 8.5% { height: 66px; }
+    10.5%    { height: 30px; }
+    12%, 14% { height: 84px; }
+    16%      { height: 30px; }
+    17.5%, 18.5% { height: 58px; }
+    20%, 100% { height: 30px; }
+}
+@keyframes hw-spider-sway { from { rotate: -7deg; } to { rotate: 7deg; } }
+
+/* Chat */
+div[data-testid="stChatMessage"] {
+    background-color: rgba(255, 117, 24, 0.05) !important; border: 1px solid rgba(255, 117, 24, 0.3) !important;
+}
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stChatMessageAvatarBackground"] { background-color: #FF7518 !important; }
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stChatMessageAvatarBackground"] { background-color: #6B2FA0 !important; }
+[data-testid="stChatInput"]:focus-within > div { border: 1px solid #FF7518 !important; box-shadow: 0 0 0 0.1rem rgba(255, 117, 24, 0.3) !important; }
+[data-testid="stVerticalBlock"] > div:has(> div > div.llm-answer-marker) {
+    background-color: rgba(107, 47, 160, 0.25) !important; border-left: 4px solid #FF7518 !important;
+}
+
+/* Toggles and checkboxes in pumpkin orange when switched on. Streamlit paints them in the theme's
+   purple, so shift the hue of just the control (= the element right before the label text). */
+[data-testid="stCheckbox"]:has(input:checked) :has(+ [data-testid="stWidgetLabel"]),
+[data-testid="stCheckbox"][data-selected="true"] :has(+ [data-testid="stWidgetLabel"]) {
+    filter: hue-rotate(124deg) saturate(1.9) brightness(0.97) !important;
+}
+/* Orange focus + selection */
+::selection { background: #FF7518; color: #1a0b00; }
+[data-testid="stTextInputRootElement"]:focus-within, [data-baseweb="select"] > div:focus-within { border-color: #FF7518 !important; }
+input { caret-color: #FF7518 !important; }
+
+/* Decorations: drifting bats and a floating ghost (never block clicks) */
+/* All decorations live in one clipped, viewport-sized layer, so things sliding in from outside the
+   screen can never create scrollbars. */
+.hw-layer { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 2000; }
+.hw-deco { position: absolute; pointer-events: none; user-select: none; }
+.hw-bat { top: 12vh; font-size: 1.8rem; animation: hw-fly 22s linear infinite; opacity: 0.85; }
+.hw-bat.b2 { top: 28vh; font-size: 1.2rem; animation-duration: 30s; animation-delay: -12s; }
+.hw-bat.b3 { top: 6vh; font-size: 1.4rem; animation-duration: 26s; animation-delay: -5s; }
+@keyframes hw-fly {
+    0%   { left: -5vw;  transform: translateY(0)    scaleX(1); }
+    25%  { transform: translateY(40px); }
+    50%  { transform: translateY(-20px); }
+    75%  { transform: translateY(30px); }
+    100% { left: 105vw; transform: translateY(0); }
+}
+
+/* Things that peek out from the screen edge now and then. Each effect has its own odd cycle length
+   (37s/53s/61s/97s/80s) so they rarely overlap. Hand and BOO bubble sit at fixed offsets tuned for the
+   chat input on a desktop-width window (the BOO bubble hovers just above the input box). */
+.hw-ghost { right: 28px; bottom: 0; font-size: 3.6rem; line-height: 1; animation: hw-peek-up 37s ease-in-out infinite; }
+.hw-hand  { left: 46vw; bottom: 0; width: 70px; height: 84px; background: url("__HAND__") center bottom / contain no-repeat;
+            animation: hw-peek-up 53s ease-in-out 14s infinite backwards; }
+.hw-boo   { left: 24rem; bottom: 125px; width: 170px; height: 119px; background: url("__BOO__") center / contain no-repeat;
+            transform-origin: 80% 100%; animation: hw-pop 61s ease-in-out 28s infinite backwards; }
+.hw-witch { top: 18vh; left: 0; width: 150px; height: 102px; background: url("__WITCH__") center / contain no-repeat;
+            filter: drop-shadow(0 0 7px rgba(255, 117, 24, 0.85));
+            animation: hw-witch-x 97s linear 40s infinite backwards, hw-witch-bob 2.4s ease-in-out infinite alternate; }
+@keyframes hw-witch-x { 0% { left: -12vw; } 9% { left: 108vw; } 100% { left: 108vw; } }
+@keyframes hw-witch-bob { from { translate: 0 -14px; rotate: -3deg; } to { translate: 0 14px; rotate: 3deg; } }
+@keyframes hw-peek-up {
+    0%, 6%   { transform: translateY(110%); }
+    10%, 15% { transform: translateY(8%); }
+    19%      { transform: translateY(-6%); }
+    24%, 100% { transform: translateY(110%); }
+}
+@keyframes hw-pop {
+    0%, 4%   { transform: scale(0) rotate(-8deg); }
+    6%       { transform: scale(1.12) rotate(3deg); }
+    8%, 13%  { transform: scale(1) rotate(-2deg); }
+    15%, 100% { transform: scale(0) rotate(-8deg); }
+}
+</style>
+<div class="hw-layer"><div class="hw-deco hw-bat">🦇</div><div class="hw-deco hw-bat b2">🦇</div><div class="hw-deco hw-bat b3">🦇</div>
+<div class="hw-deco hw-ghost">👻</div><div class="hw-deco hw-hand"></div><div class="hw-deco hw-boo"></div><div class="hw-deco hw-witch"></div></div>
+"""
+def _svg_uri(svg):
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+# Evil jack-o'-lantern, drawn as SVG so it stays crisp at any size.
+PUMPKIN_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 110'>
+<path d='M56 28 C54 12 62 6 76 10 C71 14 70 20 70 28 Z' fill='#6B7A2A' stroke='#3B2314' stroke-width='4' stroke-linejoin='round'/>
+<path d='M60 22 C30 12 4 32 7 62 C10 92 34 104 60 101 C86 104 110 92 113 62 C116 32 90 12 60 22 Z' fill='#E8820C' stroke='#3B2314' stroke-width='5' stroke-linejoin='round'/>
+<path d='M60 24 C44 42 44 84 60 100 M60 24 C76 42 76 84 60 100' fill='none' stroke='#B85F06' stroke-width='3' stroke-linecap='round'/>
+<path d='M20 44 C32 38 46 44 50 56 C38 58 26 54 20 44 Z' fill='#FFD21F' stroke='#3B2314' stroke-width='3' stroke-linejoin='round'/>
+<path d='M100 44 C88 38 74 44 70 56 C82 58 94 54 100 44 Z' fill='#FFD21F' stroke='#3B2314' stroke-width='3' stroke-linejoin='round'/>
+<path d='M16 62 C38 80 82 80 104 62 C102 86 80 96 60 96 C40 96 18 86 16 62 Z' fill='#FFD21F' stroke='#3B2314' stroke-width='3' stroke-linejoin='round'/>
+<path d='M38 72 L42 88 M52 77 L54 93 M68 77 L66 93 M82 72 L78 88' stroke='#3B2314' stroke-width='3' stroke-linecap='round'/>
+</svg>"""
+
+# Scroll with "BOO!" for the Upload button.
+SCROLL_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 110 90'>
+<path d='M20 14 H92 V70 H20 Z' fill='#F5E2AE' stroke='#5A3E1B' stroke-width='4' stroke-linejoin='round'/>
+<rect x='8' y='6' width='96' height='15' rx='7.5' fill='#E2C47C' stroke='#5A3E1B' stroke-width='4'/>
+<rect x='8' y='66' width='96' height='15' rx='7.5' fill='#E2C47C' stroke='#5A3E1B' stroke-width='4'/>
+<path d='M14 10 Q8 13.5 14 17' fill='none' stroke='#5A3E1B' stroke-width='3' stroke-linecap='round'/>
+<text x='56' y='55' text-anchor='middle' font-family='Impact, Arial Black, sans-serif' font-size='30' font-weight='900' fill='#3B2A12'>BOO!</text>
+</svg>"""
+
+# Witch on a broom (black silhouette) that flies across the screen now and then.
+WITCH_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 150'>
+<g fill='#0A0610'>
+<path d='M16 108 L70 88 L74 104 L22 128 Q6 122 16 108 Z'/>
+<path d='M10 112 L20 124 M6 118 L18 130' stroke='#0A0610' stroke-width='3' fill='none'/>
+<path d='M66 92 L206 66 L208 74 L70 104 Z'/>
+<path d='M118 4 Q108 22 102 36 Q92 34 84 38 Q100 48 130 44 Q128 28 118 4 Z'/>
+<circle cx='116' cy='54' r='11'/>
+<path d='M124 52 L136 58 L124 62 Z'/>
+<path d='M106 62 Q94 64 88 74 Q70 56 40 66 Q62 68 72 80 Q52 84 46 100 Q76 88 92 90 Q100 84 112 80 Z'/>
+<path d='M96 84 Q104 66 120 68 L132 82 L150 80 L152 88 L128 94 Q110 98 92 100 Z'/>
+<path d='M90 96 Q70 116 78 134 Q96 126 112 116 Q122 130 116 142 L128 140 Q136 120 126 100 Z'/>
+<path d='M112 126 L108 144 L124 146 L128 136 Z'/>
+</g></svg>"""
+
+COFFIN_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 100'>
+<path d='M21 4 H39 L56 34 L45 96 H15 L4 34 Z' fill='#8B4A2B' stroke='#2A1A0E' stroke-width='5' stroke-linejoin='round'/>
+<path d='M24 16 H36 L47 36 L39 84 H21 L13 36 Z' fill='#A65D36' stroke='#5A2E17' stroke-width='3' stroke-linejoin='round'/>
+<path d='M30 28 V58 M22 38 H38' stroke='#E8C766' stroke-width='5' stroke-linecap='round'/>
+</svg>"""
+
+CANDLE_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 100'>
+<ellipse cx='30' cy='90' rx='25' ry='7' fill='#3E6E8E' stroke='#1D3A52' stroke-width='3'/>
+<path d='M17 44 H43 V88 H17 Z' fill='#5BA8D6' stroke='#1D3A52' stroke-width='4' stroke-linejoin='round'/>
+<path d='M17 46 Q17 64 24 64 Q29 64 29 52 L17 52 Z' fill='#8CC8EC' stroke='#1D3A52' stroke-width='3' stroke-linejoin='round'/>
+<path d='M30 38 V44' stroke='#2A1A0E' stroke-width='3' stroke-linecap='round'/>
+<path d='M30 4 C42 18 42 32 30 38 C18 32 18 18 30 4 Z' fill='#FFA11A' stroke='#C25A00' stroke-width='3' stroke-linejoin='round'/>
+<path d='M30 18 C36 25 35 32 30 35 C25 32 24 25 30 18 Z' fill='#FFE066'/>
+</svg>"""
+
+# Green zombie hand reaching up from the bottom edge.
+HAND_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 120'>
+<g fill='#8E9B3F' stroke='#3B3D14' stroke-width='4' stroke-linejoin='round'>
+<rect x='10' y='56' width='14' height='40' rx='7' transform='rotate(-28 17 90)'/>
+<rect x='26' y='26' width='13' height='56' rx='6.5'/>
+<rect x='40' y='10' width='13' height='70' rx='6.5'/>
+<rect x='54' y='16' width='13' height='64' rx='6.5'/>
+<rect x='68' y='34' width='13' height='48' rx='6.5'/>
+<rect x='24' y='58' width='58' height='62' rx='10'/>
+</g>
+<path d='M0 120 L10 102 L20 120 L32 98 L44 120 L56 100 L68 120 L80 102 L92 120 L100 108 L100 120 Z' fill='#2B2B12'/>
+</svg>"""
+
+# Speech bubble with "BOO!" (mirrored so the tail points to the right).
+BOO_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 140'>
+<g transform='translate(200 0) scale(-1 1)'><path d='M100 8 C152 8 191 30 191 62 C191 94 152 114 110 114 C98 114 88 113 80 111 L36 134 L56 104 C26 94 9 80 9 62 C9 30 48 8 100 8 Z' fill='#FFFFFF' stroke='#2A1340' stroke-width='5' stroke-linejoin='round'/></g>
+<text x='100' y='80' text-anchor='middle' font-family='Impact, Arial Black, sans-serif' font-size='58' font-weight='900' fill='#FF7518' stroke='#B84A00' stroke-width='1.5'>BOO!</text>
+</svg>"""
+
+# Spider that rappels down onto the Upload button.
+SPIDER_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 60'>
+<g fill='none' stroke='#1A1A1A' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'>
+<path d='M21 34 L9 25 L4 33 M20 38 L6 38 L2 47 M21 42 L9 50 L7 58 M24 45 L17 55 L18 59'/>
+<path d='M39 34 L51 25 L56 33 M40 38 L54 38 L58 47 M39 42 L51 50 L53 58 M36 45 L43 55 L42 59'/>
+</g>
+<ellipse cx='30' cy='38' rx='13' ry='14' fill='#1A1A1A'/>
+<circle cx='30' cy='26' r='9' fill='#1A1A1A'/>
+<circle cx='26' cy='25' r='3.4' fill='#fff'/><circle cx='34' cy='25' r='3.4' fill='#fff'/>
+<circle cx='26.6' cy='25.6' r='1.5' fill='#1A1A1A'/><circle cx='33.4' cy='25.6' r='1.5' fill='#1A1A1A'/>
+<path d='M26 31 Q30 34 34 31' fill='none' stroke='#fff' stroke-width='1.4' stroke-linecap='round'/>
+</svg>"""
+
+if st.session_state.halloween:
+    st.markdown(HALLOWEEN_CSS.replace("__PUMPKIN__", _svg_uri(PUMPKIN_SVG))
+                             .replace("__SCROLL__", _svg_uri(SCROLL_SVG))
+                             .replace("__SPIDER__", _svg_uri(SPIDER_SVG))
+                             .replace("__COFFIN__", _svg_uri(COFFIN_SVG))
+                             .replace("__CANDLE__", _svg_uri(CANDLE_SVG))
+                             .replace("__HAND__", _svg_uri(HAND_SVG))
+                             .replace("__BOO__", _svg_uri(BOO_SVG))
+                             .replace("__WITCH__", _svg_uri(WITCH_SVG)),
+                unsafe_allow_html=True)
+
+# ==========================================================
 # --- GLOBALS & STATE ---
 # ==========================================================
 def get_env_bool(name, default=False):
@@ -235,8 +526,9 @@ ALLOW_PRIVATE_ENDPOINTS = get_env_bool("ALLOW_PRIVATE_ENDPOINTS", False)
 # Custom providers (any number, each with a name you choose)
 # ----------------------------------------------------------
 # A custom provider is any service exposing the OpenAI chat-completions API.
-# Providers live in st.session_state.custom_profiles ({name: settings}) for the
-# current browser session. They can be pre-loaded from .env:
+# Providers live in st.session_state.custom_profiles ({name: settings}) for the browser session
+# (or are also saved to data/providers.json when PERSIST_PROVIDERS=true, see "Persistence" below).
+# They can also be pre-loaded from .env:
 #   CUSTOM_PROVIDERS = JSON list, e.g.
 #     [{"name": "Mistral", "base_url": "https://api.mistral.ai/v1",
 #       "api_key_env": "MISTRAL_API_KEY", "model": "mistral-small-latest"}]
@@ -291,6 +583,78 @@ def load_env_profiles():
     if os.getenv("CUSTOM_BASE_URL", "").strip():
         add("Custom", os.getenv("CUSTOM_BASE_URL"), os.getenv("CUSTOM_API_KEY", ""), os.getenv("CUSTOM_MODEL", ""))
     return found
+
+# ----------------------------------------------------------
+# Persistence: providers created in the UI survive restarts
+# ----------------------------------------------------------
+# Saved to DATA_DIR/providers.json (default ./data, inside the project folder that docker-compose
+# already mounts, so it outlives `restart`, `--force-recreate` and rebuilds). API keys are stored
+# in plain text, like in .env: keep the data/ folder private and never share it.
+# Providers from .env are loaded first; a saved provider with the same name wins. Deleting a
+# provider that comes from .env is remembered in "deleted", so it stays gone after a restart.
+# OFF by default: with it on, API keys are written to disk. Enable with PERSIST_PROVIDERS=true in .env,
+# and keep data/ out of git (it is listed in .gitignore).
+PERSIST_PROVIDERS = get_env_bool("PERSIST_PROVIDERS", False)
+DATA_DIR = os.getenv("DATA_DIR", "data")
+PROVIDERS_FILE = os.path.join(DATA_DIR, "providers.json")
+API_KEY_HELP = (
+    "Saved in plain text to data/providers.json so it survives restarts (keep that folder private). "
+    "Leave blank for keyless local endpoints." if PERSIST_PROVIDERS else
+    "Kept in this browser session only; never written to disk or logs. Leave blank for keyless local endpoints."
+)
+SAVED_FIELDS = ("base_url", "api_key", "model", "system_as_user", "favorites", "only_pinned", "show_all_models")
+
+def load_profiles():
+    """.env providers, overridden by the saved ones; also loads the 'deleted' list into the session."""
+    profiles = load_env_profiles()
+    if not PERSIST_PROVIDERS:
+        return profiles                    # providers last for the browser session only
+    saved, deleted = {}, []
+    try:
+        with open(PROVIDERS_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        saved = data.get("providers", {}) if isinstance(data, dict) else {}
+        deleted = [d for d in data.get("deleted", []) if isinstance(d, str)] if isinstance(data, dict) else []
+    except FileNotFoundError:
+        pass
+    except Exception:
+        st.session_state["custom_env_error"] = f"{PROVIDERS_FILE} could not be read, so it was ignored."
+    for name in deleted:
+        profiles.pop(name, None)
+    for name, p in saved.items():
+        if (isinstance(p, dict) and CUSTOM_NAME_RE.match(str(name)) and str(name).lower() not in RESERVED_PROVIDER_NAMES
+                and str(p.get("base_url", "")).strip()):
+            prof = new_profile(str(p["base_url"]).strip(), str(p.get("api_key", "")), str(p.get("model", "")),
+                               p.get("system_as_user", False))
+            prof["favorites"] = [f for f in p.get("favorites", []) if isinstance(f, str)]
+            prof["only_pinned"] = bool(p.get("only_pinned", False))
+            prof["show_all_models"] = bool(p.get("show_all_models", False))
+            profiles[name] = prof
+    st.session_state["profiles_deleted"] = deleted
+    st.session_state["profiles_saved_json"] = json.dumps({"providers": saved, "deleted": deleted}, sort_keys=True)
+    return profiles
+
+def save_profiles():
+    """Writes the providers to disk if anything changed since the last save (cheap to call on every rerun)."""
+    ss = st.session_state
+    if not PERSIST_PROVIDERS:
+        return
+    payload = {"providers": {n: {f: p.get(f) for f in SAVED_FIELDS} for n, p in ss.custom_profiles.items()},
+               "deleted": [d for d in ss.get("profiles_deleted", []) if d not in ss.custom_profiles]}
+    snapshot = json.dumps(payload, sort_keys=True)
+    if snapshot == ss.get("profiles_saved_json"):
+        return
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp = PROVIDERS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        try: os.chmod(tmp, 0o600)
+        except OSError: pass
+        os.replace(tmp, PROVIDERS_FILE)         # atomic: a crash never leaves a half-written file
+        ss["profiles_saved_json"] = snapshot
+    except OSError as exc:
+        ss["custom_env_error"] = f"Could not save providers to {PROVIDERS_FILE}: {exc.__class__.__name__}"
 
 # Fixed OpenAI-compatible providers. Groq, Cohere's Compatibility API and
 # OpenRouter all speak the OpenAI chat-completions protocol, so they share one
@@ -494,7 +858,7 @@ if "last_processed_file" not in st.session_state: st.session_state.last_processe
 if "gemini_available_models" not in st.session_state: st.session_state.gemini_available_models = []
 if "selected_gemini_model" not in st.session_state: st.session_state.selected_gemini_model = None
 if "custom_cfg" not in st.session_state: st.session_state.custom_cfg = {}
-if "custom_profiles" not in st.session_state: st.session_state.custom_profiles = load_env_profiles()
+if "custom_profiles" not in st.session_state: st.session_state.custom_profiles = load_profiles()
 for _n in st.session_state.custom_profiles:
     st.session_state.multi_messages.setdefault(custom_mode_for(_n), [])
     st.session_state.session_costs.setdefault(custom_mode_for(_n), 0.0)
@@ -767,6 +1131,7 @@ def create_profile_callback():
         ss.np_error = err
         return
     ss.custom_profiles[name] = new_profile(url, key)
+    save_profiles()
     ss.multi_messages.setdefault(custom_mode_for(name), [])
     ss.session_costs.setdefault(custom_mode_for(name), 0.0)
     ss.np_error = ""
@@ -786,6 +1151,10 @@ def delete_profile_callback(name):
     """'Delete' button: removes the provider, its chat history and its widget state."""
     ss = st.session_state
     ss.custom_profiles.pop(name, None)
+    ss.setdefault("profiles_deleted", [])
+    if name not in ss.profiles_deleted:
+        ss.profiles_deleted.append(name)        # keeps a provider from .env from coming back after a restart
+    save_profiles()
     ss.multi_messages.pop(custom_mode_for(name), None)
     ss.session_costs.pop(custom_mode_for(name), None)
     for k in [k for k in list(ss.keys()) if str(k).startswith(f"cp::{name}::")]:
@@ -1066,14 +1435,16 @@ def call_llm(app_mode, model_sel, history, prompt, img=None, warn_img=True, prot
 # ==========================================================
 with st.sidebar:
     st.header("App Settings")
-    st.button("🗑️ Clear Current Chat", use_container_width=True, on_click=reset_chat)
+    st.button("Clear Current Chat" if st.session_state.halloween else "🗑️ Clear Current Chat",
+              use_container_width=True, on_click=reset_chat, key="clear_btn")
 
     trigger_data = {}
     try:
         with open("triggers.txt", "r") as f: trigger_data = json.load(f)
     except Exception: trigger_data = {"System": {"Error": ["Check triggers.txt file"]}}
 
-    with st.popover("💡 Triggers", use_container_width=True):
+    with popover_keyed("Triggers" if st.session_state.halloween else "💡 Triggers", "triggers_pop",
+                       use_container_width=True):
         col_t, col_r = st.columns([0.7, 0.3])
         col_t.markdown("### Sample Prompts")
         if col_r.button("🔄"): st.rerun()
@@ -1098,7 +1469,8 @@ with st.sidebar:
              "columns are easier to compare. Some models ignore it.")
     user_email = st.text_input("User Identity", value=os.getenv("DEMO_USER_EMAIL", "john.doe@unknown.com"))
 
-    st.divider()
+    # Tight divider (compact sidebar)
+    st.markdown('<hr class="sidebar-tight-hr">', unsafe_allow_html=True)
 
     # Provider Selection — API integration is the only supported method.
     # Built-in providers, then every custom provider by the name you gave it,
@@ -1231,7 +1603,7 @@ with st.sidebar:
                           help="Shown in the Provider list. 1–30 characters: letters, numbers, spaces, - _ .")
             st.text_input("Base URL", placeholder="https://api.mistral.ai/v1", key="np_url")
             st.text_input("API key", type="password", key="np_key",
-                          help="Kept in this browser session only; never written to disk or logs. Leave blank for keyless local endpoints.")
+                          help=API_KEY_HELP)
             if st.session_state.get("np_error"):
                 st.error(st.session_state.np_error)
             st.button("➕ Create provider", on_click=create_profile_callback, use_container_width=True, key="np_create")
@@ -1250,7 +1622,7 @@ with st.sidebar:
 
             st.text_input("Base URL", placeholder="https://api.example.com/v1", key=pk + "url")
             st.text_input("API key", type="password", key=pk + "key",
-                          help="Kept in this browser session only; never written to disk or logs. Leave blank for keyless local endpoints.")
+                          help=API_KEY_HELP)
             custom_url = normalize_base_url(st.session_state[pk + "url"])
             key_in = (st.session_state[pk + "key"] or "").strip()
 
@@ -1338,6 +1710,7 @@ with st.sidebar:
             prof["system_as_user"] = bool(sys_flag)
             prof["show_all_models"] = bool(show_all)
             prof["only_pinned"] = bool(only_pinned)
+            save_profiles()
 
             st.button("🗑️ Delete this provider", on_click=delete_profile_callback, args=(active_profile,),
                       use_container_width=True, key=pk + "del")
@@ -1376,7 +1749,9 @@ with st.container():
     st.markdown('<div class="fixed-header-container"></div>', unsafe_allow_html=True)
     col_t, col_u = st.columns([0.85, 0.15])
     with col_t:
-        st.title("Spooky 𔓎", anchor=False)
+        # The title doubles as the Halloween-mode switch.
+        st.button("Spooky" if st.session_state.halloween else "Spooky 𔓎",
+                  on_click=toggle_halloween, key="title_btn", help="Get me outta here!" if st.session_state.halloween else "Trick or treat? 🎃")
         disp_id = f"{PS_APP_ID[:16]}..."
         c, t = (":green", "Connected ●") if ps_enabled else (":red", "Bypassed ○")
         policy_disp = PS_POLICY_NAME if PS_POLICY_NAME else "(connector default)"
@@ -1386,7 +1761,7 @@ with st.container():
         st.caption(f"Mode: **{app_mode}** | Model: **{selected_model}**{endpoint_disp}\n\nSecurity: {c}[**{t}**] | ID: **{disp_id}** | Policy: **{policy_disp}**")
     with col_u:
         st.markdown('<div class="header-upload-btn">', unsafe_allow_html=True)
-        with st.popover("➕ Upload"):
+        with popover_keyed("Upload" if st.session_state.halloween else "➕ Upload", "upload_pop"):
             uploaded_file = st.file_uploader("Scan File", type=["txt", "pdf", "png", "jpg", "xlsx"], label_visibility="collapsed", key=f"f_{st.session_state.uploader_key}")
             sample_choice = NO_SAMPLE
             _samples = list_sample_files()
