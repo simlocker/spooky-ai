@@ -96,10 +96,19 @@ header { background: none !important; border: none !important; }
     padding: 0 !important; height: auto !important; min-height: 0 !important; justify-content: flex-start !important;
 }
 .st-key-title_btn button p { font-size: 2.75rem !important; font-weight: 700 !important; line-height: 1.25 !important; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.55rem !important; }
-[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { padding: 0.2rem 0 0.2rem !important; margin: 0 !important; line-height: 1.4 !important; }
+/* Sidebar spacing: compact, but with room to breathe. Tune these three numbers to taste:
+   --sb-gap = space between controls, --sb-heading-above / --sb-heading-below = space around the
+   section headings ("App Settings", "Protection Layer"). */
+:root { --sb-gap: 0.7rem; --sb-heading-above: 1.1rem; --sb-heading-below: 0.7rem; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: var(--sb-gap) !important; }
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { padding: 0.2rem 0 !important; margin: 0 !important; line-height: 1.4 !important; }
 [data-testid="stSidebar"] [data-testid="stHeading"] { margin: 0 !important; }
-hr.sidebar-tight-hr { margin: 0.1rem 0 !important; border: none; border-top: 1px solid rgba(255,255,255,0.18); }
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(h2),
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(h3) {
+    margin-top: var(--sb-heading-above) !important; margin-bottom: var(--sb-heading-below) !important;
+}
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:first-child:has(h2) { margin-top: 0.5rem !important; }
+hr.sidebar-tight-hr { margin: 0.4rem 0 !important; border: none; border-top: 1px solid rgba(255,255,255,0.18); }
 
 /* Ensure Sidebar buttons are grey, not purple */
 [data-testid="stSidebar"] button {
