@@ -338,6 +338,18 @@ CUSTOM_MESSAGES = {
     "redacted_notice": (
         "⚠️ Sensitive information was detected and redacted from your message or file before continuing."
     ),
+    # Fallback for a block whose reason isn't one of the categories in BLOCK_MESSAGES below.
+    # {categories} is replaced with the names Prompt Security reported.
+    "blocked_generic": (
+        "🚫 **This request was blocked by security policy.**\n\n"
+        "It was stopped before reaching the AI (detected: {categories}). "
+        "Please rephrase your request or contact your administrator."
+    ),
+    # Shown when the AI's ANSWER (not your prompt) is blocked.
+    "blocked_response": (
+        "🚫 **The AI's answer was blocked by security policy.**\n\n"
+        "It contained content that is not allowed (detected: {categories})."
+    ),
     "security_check_error": (
         "❌ **This content could not be verified with the security service** (backend error). "
         "The content was sent without full inspection — treat it as unverified."
@@ -346,10 +358,111 @@ CUSTOM_MESSAGES = {
 
 # Set SHOW_CUSTOM_NOTICES=false in .env to hide the "redacted"/"security check
 # error" banners entirely (no colored box at all) without touching this file
-# again. This does NOT affect "blocked_prompt" — that's the actual answer
+# again. This does NOT affect the block messages ("blocked_prompt", BLOCK_MESSAGES...) — that's the actual answer
 # text shown for a blocked turn, not a supplementary notice, so there's
 # always something to display there regardless of this setting.
 SHOW_CUSTOM_NOTICES = os.getenv("SHOW_CUSTOM_NOTICES", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# What to show when a PROMPT is blocked, depending on WHAT triggered the block.
+# "sensitive" is CUSTOM_MESSAGES["blocked_prompt"] above. Edit any text freely.
+BLOCK_MESSAGES = {
+    "injection": (
+        "🚫 **Blocked: prompt-injection / jailbreak attempt.**\n\n"
+        "This message tries to override the assistant's instructions or safety rules, so it was "
+        "stopped before it reached the AI. Please rephrase your request without asking the assistant "
+        "to ignore its rules or to take on a different role."
+    ),
+    "leak": (
+        "🚫 **Blocked: attempt to extract hidden instructions.**\n\n"
+        "This message asks the assistant to reveal its system prompt or internal configuration, "
+        "so it was stopped before it reached the AI."
+    ),
+    "secrets": (
+        "🚫 **Blocked: credentials detected.**\n\n"
+        "This message contains an API key, token or password (or something that looks like one). "
+        "Secrets must never be pasted into an AI tool. Remove them and try again."
+    ),
+    "sensitive": CUSTOM_MESSAGES["blocked_prompt"],
+    "harmful": (
+        "🚫 **Blocked: harmful or inappropriate content.**\n\n"
+        "This message contains content that is not allowed under the acceptable-use policy."
+    ),
+    "topic": (
+        "🚫 **Blocked: topic not allowed.**\n\n"
+        "This subject is outside what the AI is permitted to discuss under corporate policy."
+    ),
+    "unicode": (
+        "🚫 **Blocked: hidden or unusual characters.**\n\n"
+        "This message contains invisible or look-alike characters that can be used to smuggle "
+        "instructions past the AI's safeguards."
+    ),
+    "code": (
+        "🚫 **Blocked: source code detected.**\n\n"
+        "Sharing source code with this AI is not permitted under corporate policy."
+    ),
+    "url": (
+        "🚫 **Blocked: link not allowed.**\n\n"
+        "This message contains a link that is not permitted under corporate policy."
+    ),
+    "rate": (
+        "🚫 **Blocked: usage limit reached.**\n\n"
+        "Too much text was sent in a short time. Please wait a moment and try again."
+    ),
+    "guardrails": (
+        "🚫 **Blocked by a content guardrail.**\n\n"
+        "This message goes against a rule your organization set for this AI."
+    ),
+}
+
+# How Prompt Security's violation names map to the categories above. Names are matched loosely
+# (lower-case, spaces/underscores/dashes removed), in THIS order of priority: if several detectors
+# fired, the first category in the list wins. ("unicode" must come before "code".)
+BLOCK_CATEGORY_RULES = [
+    ("injection", ("promptinjection", "injection", "jailbreak")),
+    ("leak", ("promptleak", "leak")),
+    ("secrets", ("secret",)),
+    ("sensitive", ("sensitivedata", "sensitive", "pii", "regex", "privacy")),
+    ("harmful", ("harmful", "toxic", "moderat")),
+    ("topic", ("topic",)),
+    ("unicode", ("unicode",)),
+    ("code", ("code",)),
+    ("url", ("url",)),
+    ("rate", ("tokenrate", "ratelimit")),
+    ("guardrails", ("guardrail", "naturallanguage")),
+]
+
+def violation_names(dbg, direction="prompt"):
+    """Violation names Prompt Security reported for this check; falls back to the detectors that produced findings."""
+    names = []
+    try:
+        block = ((dbg or {}).get("result") or {}).get(direction) or {}
+        for v in (block.get("violations") or []):
+            names.append(str(v.get("name") or v.get("type") or v) if isinstance(v, dict) else str(v))
+        if not names:
+            names = [str(k) for k, v in (block.get("findings") or {}).items() if v]
+    except Exception:
+        pass
+    return names
+
+def block_category(names):
+    """The highest-priority category for a list of violation names, or None if none is recognised."""
+    flat = ["".join(ch for ch in n.lower() if ch.isalpha()) for n in names]
+    for category, keywords in BLOCK_CATEGORY_RULES:
+        if any(k in f for f in flat for k in keywords):
+            return category
+    return None
+
+def blocked_message(dbg, direction="prompt"):
+    """The message to show for a blocked prompt (or blocked answer), chosen by what triggered the block."""
+    names = violation_names(dbg, direction)
+    shown = ", ".join(dict.fromkeys(names)) or "policy violation"
+    if direction == "response":
+        return CUSTOM_MESSAGES["blocked_response"].format(categories=shown)
+    category = block_category(names)
+    if category is None:
+        return CUSTOM_MESSAGES["blocked_generic"].format(categories=shown)
+    text = BLOCK_MESSAGES[category]
+    return text + (f"\n\n*Detected by: {shown}*" if names else "")
 
 def show_redacted_notice():
     if SHOW_CUSTOM_NOTICES:
@@ -1557,7 +1670,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
 
                 if not safe:
                     protected_blocked = True
-                    protected_final = CUSTOM_MESSAGES["blocked_prompt"]
+                    protected_final = blocked_message(dbg)
                     st.error(protected_final)
                 else:
                     protected_sent = check
@@ -1572,6 +1685,8 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                                 # computed but discarded, which is why the UI could show "Safe"
                                 # even while the response was being redacted underneath.
                                 s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                                if s_status == "blocked":
+                                    s_reply = blocked_message(s_dbg, "response")
                                 turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
                                 protected_final = s_reply
                                 protected_ok = bool(s_safe)
@@ -1666,7 +1781,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
             user_entry = {"role": "user", "content": full_p, "sent": check if safe else None, "raw": not ps_enabled}
 
             if not safe:
-                m = CUSTOM_MESSAGES["blocked_prompt"]
+                m = blocked_message(dbg)
                 user_entry["skip_history"] = True      # blocked content never goes back to the model
                 msgs.append(user_entry)
                 msgs.append({"role": "assistant", "content": m, "debug": turn_debug, "notices": turn_notices, "skip_history": True})
@@ -1695,6 +1810,8 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                     # not silently folded away — this is the check that catches
                     # PII the model echoes back in its answer.
                     s_safe, s_reply, s_dbg, s_status = check_security_api(res_text, "response")
+                    if s_status == "blocked":
+                        s_reply = blocked_message(s_dbg, "response")
                     turn_debug["response_check"] = {"checked_p": s_reply, "original_p": res_text, "debug": s_dbg, "status_type": s_status}
 
                     # Answer bubble first — the response check only exists

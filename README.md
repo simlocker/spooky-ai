@@ -22,7 +22,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 - 🧾 **Named policy** — optionally pin a specific Prompt Security policy instead of the connector default
 - 🔎 **Debug views** — per-turn *Prompt Debug* and *Response Debug* boxes showing the status (Safe / Redacted / Blocked) and the raw `/api/protect` JSON
 - 📊 **Session stats** — live block/redaction counters, latency and last violation per session
-- 🗣️ **Custom user-facing messages** — block and redaction messages are defined in `app.py` (`CUSTOM_MESSAGES`), so you can tailor them to your demo narrative
+- 🗣️ **Block messages that match the reason** — a jailbreak, a leaked secret, sensitive data, a banned topic… each gets its own explanation. All wording lives in `app.py` (`CUSTOM_MESSAGES` and `BLOCK_MESSAGES`), so you can tailor it to your demo narrative
 
 ---
 
@@ -214,9 +214,24 @@ The app calls the LLM provider directly. Before each call, the prompt (plus the 
 
 | Outcome | What the app does |
 | :--- | :--- |
-| **Blocked** | The prompt is never sent to the LLM; the user sees the block message from `CUSTOM_MESSAGES` |
+| **Blocked** | The prompt is never sent to the LLM; the user sees a message that depends on **what triggered the block** (see below) |
 | **Redacted** | The redacted text (e.g. `[REDACTED_CREDIT_CARD_1]`) is sent to the LLM instead of the original, and a notice is shown |
 | **Safe** | The prompt passes through unchanged |
+
+### What the user sees when something is blocked
+
+The app reads which detector fired from Prompt Security's response and picks the matching message:
+
+| Triggered by | Message |
+| :--- | :--- |
+| Prompt Injection / Jailbreak | Blocked: prompt-injection / jailbreak attempt |
+| Prompt Leak | Blocked: attempt to extract hidden instructions |
+| Secrets | Blocked: credentials detected |
+| Sensitive Data / RegEx | Confidential information detected (`CUSTOM_MESSAGES["blocked_prompt"]`) |
+| Harmful content, Topic, Unicode, Code, URL, Token rate limit, Natural-language guardrails | One message each |
+| Anything else | A neutral "blocked by security policy" message that names what was detected |
+
+Each message ends with *Detected by: …* listing the names Prompt Security reported, and a blocked **answer** from the model gets its own message. To change the wording, edit `CUSTOM_MESSAGES` and `BLOCK_MESSAGES` in `app.py`; to teach the app a new detector name, add a keyword to `BLOCK_CATEGORY_RULES`.
 
 The LLM's response goes through the same check before it is shown, so sensitive data the model echoes back is caught too. Each check is reported separately (a clean prompt can still produce a redacted response).
 
