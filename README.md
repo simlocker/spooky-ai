@@ -9,7 +9,7 @@ A hands-on demo app showing how to build a secure AI chat interface powered by *
 ## Features
 
 - 🤖 **Four built-in LLM integrations** — Gemini (free tier), Groq (free tier), Cohere and OpenRouter — **plus as many custom providers as you like**
-- 🔌 **Bring your own endpoints** — add any OpenAI-compatible service from the sidebar, give it a name and **fetch its model list** with one click; no code changes or rebuild needed
+- 🔌 **Bring your own endpoints** — add any OpenAI-compatible service from the sidebar, give it a name, and its **model list loads automatically** (with ⭐ pinning for the models you actually use); no code changes or rebuild needed
 - 🛡️ **Side-by-side comparison** — send the same prompt to a protected and unprotected chat simultaneously to see the difference
 - 🔀 **Protection toggle** — switch Prompt Security off at any time to show the "before" picture
 - 🎯 **Consistent answers** — a toggle (on by default) that sets the model temperature to 0, so runs and the two side-by-side columns are comparable
@@ -165,7 +165,9 @@ Any service that exposes the OpenAI chat-completions API (`POST {Base URL}/chat/
    | API key | your key (kept in the browser session only; never written to disk) |
 
 3. The new provider is selected automatically and appears in the list as `Mistral (custom)`.
-4. Press **🔄 Fetch models**: the app asks the endpoint for its model list (`GET {Base URL}/models`) and fills a dropdown. Pick a model and start chatting. Prefer typing? Choose **✏️ Type a model name…** (or just type it if the endpoint has no `/models`).
+4. The app **fetches the model list by itself** (`GET {Base URL}/models`) and fills a dropdown that starts on *— choose a model —*, so a paid model is never picked silently. Pick one and start chatting. **🔄 Fetch models** refreshes the list. Prefer typing? Choose **✏️ Type a model name…** (or just type it if the endpoint has no `/models`).
+
+**⭐ Pinning.** Endpoints often list dozens of models, most of them paid. Press **⭐ Pin this model** for the ones you use: pinned models are listed first with a ⭐, and **Show only ⭐ pinned** hides the rest. Pins can also be typed names, so they work for endpoints that don't offer `/models`. Your last choice is remembered for each provider.
 
 You can create as many providers as you want. Each one has its own chat history and remembers its URL, key and model while you switch between providers. To remove one, select it and press **🗑️ Delete this provider**; to rename one, delete it and create it again.
 
@@ -185,7 +187,7 @@ MISTRAL_API_KEY=your_mistral_key
 TOGETHER_API_KEY=your_together_key
 ```
 
-Each entry takes `name` and `base_url` (required), plus optional `model`, `system_as_user` (`true`/`false`) and either `api_key_env` (the name of an environment variable holding the key — recommended, so keys stay out of the JSON) or a literal `api_key`. Entries with an invalid or already-used name are skipped; if the JSON itself is invalid, the sidebar shows a warning. Keep the whole value on one line, wrapped in single quotes.
+Each entry takes `name` and `base_url` (required), plus optional `model` (the default model), `favorites` (a list of pinned model names, e.g. `["model-a","model-b"]`), `system_as_user` (`true`/`false`) and either `api_key_env` (the name of an environment variable holding the key — recommended, so keys stay out of the JSON) or a literal `api_key`. Entries with an invalid or already-used name are skipped; if the JSON itself is invalid, the sidebar shows a warning. Keep the whole value on one line, wrapped in single quotes.
 
 The older `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` / `CUSTOM_MODEL` variables still work and create one extra provider named `Custom`.
 
@@ -222,7 +224,8 @@ Some details worth knowing:
 
 - **Redaction note for the model.** The app tells the LLM that bracketed tokens like `[REDACTED_EMAIL_ADDRESS_1]` are harmless placeholders, so smaller models don't refuse legitimate requests just because they see an unfamiliar token.
 - **Retries and errors.** If a security check fails (network error, rate limit, malformed backend reply), the app retries up to twice with a short backoff. If it still fails, the turn is clearly flagged as *"Security Check Error — content NOT verified"*; it is never displayed as "Safe", and the content continues unverified. Keep this in mind if you adapt the app for anything beyond a demo.
-- **Conversation history is protected too.** On follow-up questions the model only receives the *redacted* versions of earlier prompts. Blocked prompts, errors and empty answers are never replayed. In side-by-side mode each column keeps its own history (redacted on the left, original on the right).
+- **Conversation history is protected too.** On follow-up questions the protected model only receives the *redacted* versions of earlier prompts. Blocked prompts, errors and empty answers are never replayed.
+- **The two side-by-side columns never share turns.** The unprotected column only replays turns that really ran unprotected (earlier side-by-side turns, or turns made with Prompt Security switched off). Turns that went through protection are left out of it, because models copy patterns they see in a conversation and would start writing `[REDACTED_…]` tokens themselves.
 - **Stats.** Blocks, redactions, last latency and last violation are shown under *Session Stats* in the sidebar.
 
 ---

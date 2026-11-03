@@ -247,6 +247,7 @@ CUSTOM_MODE_PREFIX = "API (Custom: "
 ADD_PROVIDER_LABEL = "➕ Add custom provider…"
 ADD_MODE = "API (Custom: new)"
 TYPE_MODEL_OPTION = "✏️ Type a model name…"
+CHOOSE_MODEL_OPTION = "— choose a model —"
 CUSTOM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,29}$")
 RESERVED_PROVIDER_NAMES = {"groq", "gemini", "cohere", "openrouter"}
 # Model ids that are clearly not chat models (hidden unless "show all" is ticked).
@@ -263,16 +264,18 @@ def profile_label(name):
 
 def new_profile(base_url="", api_key="", model="", system_as_user=False):
     return {"base_url": base_url, "api_key": api_key, "model": model,
-            "system_as_user": bool(system_as_user), "models_all": [], "models_error": "", "show_all_models": False}
+            "system_as_user": bool(system_as_user), "models_all": [], "models_error": "", "show_all_models": False,
+            "favorites": [], "only_pinned": False, "auto_fetch": bool(base_url)}
 
 def load_env_profiles():
     """Providers pre-loaded from .env (see the comment above)."""
     found = {}
-    def add(name, url, key, model, sys_flag=False):
+    def add(name, url, key, model, sys_flag=False, favorites=None):
         name = (name or "").strip()
         if (CUSTOM_NAME_RE.match(name) and name.lower() not in RESERVED_PROVIDER_NAMES
                 and name.lower() not in {n.lower() for n in found} and (url or "").strip()):
             found[name] = new_profile((url or "").strip(), (key or "").strip(), (model or "").strip(), sys_flag)
+            found[name]["favorites"] = [f.strip() for f in (favorites or []) if isinstance(f, str) and f.strip()]
     raw = os.getenv("CUSTOM_PROVIDERS", "").strip()
     if len(raw) > 1 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
         raw = raw[1:-1]          # older docker-compose versions keep the quotes around .env values
@@ -280,7 +283,8 @@ def load_env_profiles():
         try:
             for entry in json.loads(raw):
                 key = os.getenv(entry.get("api_key_env", ""), "") if entry.get("api_key_env") else entry.get("api_key", "")
-                add(entry.get("name"), entry.get("base_url"), key, entry.get("model"), entry.get("system_as_user", False))
+                add(entry.get("name"), entry.get("base_url"), key, entry.get("model"), entry.get("system_as_user", False),
+                    entry.get("favorites"))
         except Exception:
             # malformed JSON: keep the app working, but tell the user (shown in the sidebar)
             st.session_state["custom_env_error"] = "CUSTOM_PROVIDERS in .env is not valid JSON, so it was ignored."
@@ -485,11 +489,16 @@ def get_api_history(chat_history, view="protected"):
         (the REDACTED prompt that was actually sent, plus the checked answer).
         Replaying the user's ORIGINAL prompts here would hand earlier sensitive
         data to the model on every later turn, bypassing the protection.
-    view="raw": the unprotected conversation — original prompts and the raw
-        answers that column produced.
+    view="raw": the unprotected conversation. It may contain ONLY turns that
+        really ran unprotected: side-by-side turns (original prompt + the raw
+        answer that column produced) and single-view turns made while Prompt
+        Security was switched off. Turns that went through the protected
+        pipeline are excluded: their answers contain [REDACTED_...] tokens, and
+        models copy whatever pattern they see in the conversation, so the
+        "unprotected" column started inventing redaction tokens of its own.
 
-    Blocked turns, errors and empty answers are skipped, so the history never
-    contains orphan user messages or blocked content."""
+    Blocked turns, errors and empty answers are skipped in both views, so the
+    history never contains orphan user messages or blocked content."""
     clean = []
     for item in chat_history:
         if item.get("skip_history"):
@@ -498,7 +507,8 @@ def get_api_history(chat_history, view="protected"):
         if role == "side_by_side":
             if view == "raw":
                 resp = item.get("unprotected_response") or ""
-                if item.get("unprotected_ok", True) and resp and not resp.startswith(HISTORY_ERROR_PREFIXES):
+                if (item.get("unprotected_ok", True) and resp and not resp.startswith(HISTORY_ERROR_PREFIXES)
+                        and "[REDACTED_" not in resp):        # safety net: never replay answers that contain tokens
                     clean.append({"role": "user", "content": item["user_prompt"]})
                     clean.append({"role": "assistant", "content": resp})
             else:
@@ -508,6 +518,8 @@ def get_api_history(chat_history, view="protected"):
                     clean.append({"role": "user", "content": sent})
                     clean.append({"role": "assistant", "content": resp})
         elif "role" in item and "content" in item:
+            if view == "raw" and not item.get("raw"):
+                continue                                       # a protected single-view turn: not part of the raw conversation
             if item["role"] == "user" and view == "protected":
                 content = item.get("sent", item["content"])
             else:
@@ -647,6 +659,15 @@ def create_profile_callback():
     ss.np_error = ""
     ss.np_name = ss.np_url = ss.np_key = ""
     ss.provider_select = profile_label(name)      # jump straight to the new provider
+
+def toggle_favorite_callback(name, model):
+    """'Pin this model' button: adds/removes a model from the provider's favorites."""
+    prof = st.session_state.custom_profiles.get(name)
+    if prof and model:
+        if model in prof["favorites"]:
+            prof["favorites"].remove(model)
+        else:
+            prof["favorites"].append(model)
 
 def delete_profile_callback(name):
     """'Delete' button: removes the provider, its chat history and its widget state."""
@@ -1109,7 +1130,8 @@ with st.sidebar:
             # Streamlit drops the state of widgets that aren't drawn, so restore
             # what was typed earlier from the stored profile before drawing them.
             for _f, _src in (("url", "base_url"), ("key", "api_key"), ("model_text", "model"),
-                             ("sys", "system_as_user"), ("show_all", "show_all_models")):
+                             ("sys", "system_as_user"), ("show_all", "show_all_models"),
+                             ("only_pinned", "only_pinned")):
                 if pk + _f not in st.session_state:
                     st.session_state[pk + _f] = prof[_src]
 
@@ -1128,9 +1150,13 @@ with st.sidebar:
                 st.caption("No API key provided — sending a placeholder (fine for local/keyless endpoints).")
 
             # ---- model: fetch the list from the endpoint, or type a name ----
-            if st.button("🔄 Fetch models", key=pk + "fetch", use_container_width=True,
-                         disabled=not (custom_url and url_ok),
-                         help="Asks the endpoint for its model list (GET {Base URL}/models)."):
+            fetch_clicked = st.button("🔄 Fetch models", key=pk + "fetch", use_container_width=True,
+                                      disabled=not (custom_url and url_ok),
+                                      help="Asks the endpoint for its model list (GET {Base URL}/models).")
+            # A freshly added provider fetches its model list by itself, once.
+            auto_fetch = bool(prof.get("auto_fetch")) and bool(custom_url) and url_ok
+            if fetch_clicked or auto_fetch:
+                prof["auto_fetch"] = False
                 with st.spinner("Asking the endpoint for its models…"):
                     try:
                         prof["models_all"] = fetch_models(custom_url, key_in or "not-needed")
@@ -1146,17 +1172,48 @@ with st.sidebar:
             if all_ids:
                 hidden = len(all_ids) - len(shown)
                 st.caption(f"{len(shown)} models found" + (f" · {hidden} non-chat hidden" if hidden else ""))
-            if shown:
-                opts = shown + [TYPE_MODEL_OPTION]
+
+            # ⭐ pinned models come first; "only pinned" hides everything else (handy when most models are paid).
+            favs = list(prof["favorites"])
+            only_pinned = st.checkbox(f"Show only ⭐ pinned ({len(favs)})", key=pk + "only_pinned") if favs else False
+            pool = list(shown)
+            for f in favs:
+                if f not in pool:
+                    pool.append(f)       # pinned names stay selectable even if the endpoint doesn't list them
+            if only_pinned and favs:
+                ordered = list(favs)
+            else:
+                ordered = [m for m in favs if m in pool] + [m for m in pool if m not in favs]
+
+            if ordered:
                 cur = prof["model"]
-                default_idx = shown.index(cur) if cur in shown else (len(opts) - 1 if cur else 0)
-                choice = st.selectbox("Model", opts, index=default_idx, key=pk + "model_choice")
+                opts = ordered + [TYPE_MODEL_OPTION]
+                if not cur:
+                    # Nothing chosen yet: don't silently pick the first (often a paid) model.
+                    opts = [CHOOSE_MODEL_OPTION] + opts
+                if cur in opts:
+                    default_idx = opts.index(cur)
+                elif cur and cur not in all_ids and cur not in favs:
+                    default_idx = opts.index(TYPE_MODEL_OPTION)          # a name that was typed by hand
+                else:
+                    default_idx = 0
+                fav_set = set(favs)
+                choice = st.selectbox("Model", opts, index=default_idx, key=pk + "model_choice",
+                                      format_func=lambda m, _f=fav_set: f"⭐ {m}" if m in _f else m)
                 if choice == TYPE_MODEL_OPTION:
                     model_val = (st.text_input("Model name", placeholder="e.g. gpt-4o-mini", key=pk + "model_text") or "").strip()
+                elif choice == CHOOSE_MODEL_OPTION:
+                    model_val = ""
                 else:
                     model_val = choice
             else:
                 model_val = (st.text_input("Model name", placeholder="e.g. gpt-4o-mini", key=pk + "model_text") or "").strip()
+
+            if model_val:
+                st.button("☆ Unpin this model" if model_val in favs else "⭐ Pin this model",
+                          key=pk + "pin", use_container_width=True, on_click=toggle_favorite_callback,
+                          args=(active_profile, model_val),
+                          help="Pinned models are listed first. Your last choice is remembered for this provider.")
 
             sys_flag = st.checkbox("Endpoint rejects 'system' messages", key=pk + "sys",
                                    help="Sends the redaction note inside the first user message instead.")
@@ -1167,6 +1224,7 @@ with st.sidebar:
             prof["model"] = model_val
             prof["system_as_user"] = bool(sys_flag)
             prof["show_all_models"] = bool(show_all)
+            prof["only_pinned"] = bool(only_pinned)
 
             st.button("🗑️ Delete this provider", on_click=delete_profile_callback, args=(active_profile,),
                       use_container_width=True, key=pk + "del")
@@ -1605,7 +1663,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
             # "content" is what the user typed (shown in the chat); "sent" is
             # what the model actually received (the redacted text) — only
             # "sent" is replayed to the model on later turns.
-            user_entry = {"role": "user", "content": full_p, "sent": check if safe else None}
+            user_entry = {"role": "user", "content": full_p, "sent": check if safe else None, "raw": not ps_enabled}
 
             if not safe:
                 m = CUSTOM_MESSAGES["blocked_prompt"]
@@ -1657,7 +1715,7 @@ if prompt and selected_model not in ["Unavailable", "Connection Error"]:
                         st.caption("🔎 Response Check")
                         render_debug_box(turn_debug["response_check"])
 
-                    assistant_entry = {"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices}
+                    assistant_entry = {"role": "assistant", "content": s_reply, "debug": turn_debug, "notices": turn_notices, "raw": not ps_enabled}
                     if not s_safe:
                         user_entry["skip_history"] = True
                         assistant_entry["skip_history"] = True
